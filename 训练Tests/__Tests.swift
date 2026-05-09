@@ -1,37 +1,62 @@
-//
-//  __Tests.swift
-//  训练Tests
-//
-//  Created by 范想佳 on 2026/5/8.
-//
+import Foundation
+import Testing
+@testable import 训练
 
-import XCTest
-
-final class __Tests: XCTestCase {
-
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+@Suite("LiftLog Core Logic")
+struct LiftLogCoreTests {
+    @Test("Volume uses total weight times reps")
+    func volumeCalculatorSameWeight() {
+        let set = SetRecord(exerciseId: UUID(), setIndex: 1, actualReps: 8, weightMode: .sameWeight, weight: 100, isCompleted: true)
+        #expect(VolumeCalculator.volume(for: set) == 800)
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    @Test("Volume uses left plus right for dumbbells")
+    func volumeCalculatorLeftRight() {
+        let set = SetRecord(exerciseId: UUID(), setIndex: 1, actualReps: 10, weightMode: .leftRightSeparate, leftWeight: 20, rightWeight: 20, isCompleted: true)
+        #expect(VolumeCalculator.volume(for: set) == 400)
     }
 
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
-        // XCTest Documentation
-        // https://developer.apple.com/documentation/xctest
+    @Test("Incomplete sets do not count toward volume")
+    func setCompletionFiltersVolume() {
+        let set = SetRecord(exerciseId: UUID(), setIndex: 1, actualReps: 10, weightMode: .sameWeight, weight: 50, isCompleted: false)
+        #expect(VolumeCalculator.volume(for: set) == 0)
     }
 
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        measure {
-            // Put the code you want to measure the time of here.
-        }
+    @Test("Epley estimated one rep max")
+    func oneRepMaxCalculator() {
+        let value = OneRepMaxCalculator.epley(weight: 100, reps: 10)
+        #expect(abs(value - 133.333) < 0.01)
     }
 
+    @Test("Weekly aggregation counts completed workouts")
+    func weeklyAggregation() {
+        let exerciseId = UUID()
+        let completedSet = SetRecord(exerciseId: exerciseId, setIndex: 1, actualReps: 10, weightMode: .sameWeight, weight: 50, isCompleted: true)
+        let workoutExercise = WorkoutExercise(exerciseId: exerciseId, exerciseName: "Bench", primaryMuscle: .chest, exerciseType: .barbell, sets: [completedSet])
+        let session = WorkoutSession(name: "Workout", endedAt: Date(), status: .completed, exercises: [workoutExercise])
+        let cancelled = WorkoutSession(name: "Cancelled", status: .cancelled)
+        let summaries = AggregationManager.weeklySummaries(from: [session, cancelled])
+        #expect(summaries.last?.workoutCount == 1)
+        #expect(summaries.last?.volume == 500)
+        #expect(summaries.last?.completedSets == 1)
+    }
+
+    @Test("Unit conversion kg and lb")
+    func unitConversion() {
+        let pounds = UnitConversionManager.kilogramsToPounds(100)
+        #expect(abs(pounds - 220.462) < 0.01)
+        let kilograms = UnitConversionManager.poundsToKilograms(pounds)
+        #expect(abs(kilograms - 100) < 0.01)
+    }
+
+    @Test("Set completion toggles timestamp")
+    func setCompletionToggle() {
+        let set = SetRecord(exerciseId: UUID(), setIndex: 1)
+        set.toggleCompletion()
+        #expect(set.isCompleted)
+        #expect(set.completedAt != nil)
+        set.toggleCompletion()
+        #expect(!set.isCompleted)
+        #expect(set.completedAt == nil)
+    }
 }

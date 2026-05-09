@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+*.moved-aside
+
+# Build artifacts
+DerivedData/
+build/
+Build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+Package.resolved
+
+# SwiftData/CoreData runtime stores
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Temporary files
+*.tmp
+*.swp
+*.lock
+
