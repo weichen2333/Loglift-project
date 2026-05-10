@@ -1,9 +1,13 @@
 import SwiftUI
 import SwiftData
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @main
 struct LiftLogApp: App {
     init() {
+        #if canImport(UIKit)
         let appearance = UINavigationBarAppearance()
         appearance.configureWithDefaultBackground()
         appearance.titleTextAttributes = [
@@ -15,6 +19,7 @@ struct LiftLogApp: App {
         UINavigationBar.appearance().standardAppearance = appearance
         UINavigationBar.appearance().scrollEdgeAppearance = appearance
         UINavigationBar.appearance().compactAppearance = appearance
+        #endif
     }
 
     var sharedModelContainer: ModelContainer = {

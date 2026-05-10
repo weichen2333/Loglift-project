@@ -73,6 +73,7 @@ struct WatchStartWorkoutRequest {
 }
 
 enum WatchCommand: String {
+    case cancelWorkout
     case completeCurrentSet
     case endedWorkout
     case pauseWorkout
@@ -240,6 +241,22 @@ final class HealthKitManager: NSObject {
         #endif
     }
 
+    func discardWorkout() async {
+        #if os(watchOS) && canImport(HealthKit)
+        session?.end()
+        guard let builder else {
+            session = nil
+            return
+        }
+        do {
+            try await builder.endCollection(at: Date())
+        } catch {}
+        builder.discardWorkout()
+        self.builder = nil
+        self.session = nil
+        #endif
+    }
+
     func observeHeartRate() {
         // Live heart rate is delivered by HKLiveWorkoutBuilder on Apple Watch.
     }
@@ -382,6 +399,8 @@ final class WatchConnectivityManager: NSObject {
     private var lastSentWorkoutStateData: Data?
     private var pendingCompleteCurrentSetRequested = false
     private var pendingCompleteCurrentSetWorkoutId: UUID?
+    private var pendingCancelWorkoutRequested = false
+    private var pendingCancelWorkoutId: UUID?
     private var pendingEndedWorkoutRequested = false
     private var pendingEndedHealthKitUUID: UUID?
     private var pendingEndedWorkoutId: UUID?
@@ -476,6 +495,10 @@ final class WatchConnectivityManager: NSObject {
 
     func consumeCompleteCurrentSetCommand(for workoutId: UUID) -> Bool {
         consumeWorkoutCommand(&pendingCompleteCurrentSetRequested, workoutId: &pendingCompleteCurrentSetWorkoutId, for: workoutId)
+    }
+
+    func consumeCancelWorkoutCommand(for workoutId: UUID) -> Bool {
+        consumeWorkoutCommand(&pendingCancelWorkoutRequested, workoutId: &pendingCancelWorkoutId, for: workoutId)
     }
 
     func consumeEndedWorkoutCommand() -> (requested: Bool, healthKitUUID: UUID?, workoutId: UUID?, metrics: WatchWorkoutMetricsPayload?) {
@@ -630,6 +653,9 @@ extension WatchConnectivityManager: WCSessionDelegate {
         Task { @MainActor in
             let commandWorkoutId = (message["workoutId"] as? String).flatMap(UUID.init(uuidString:))
             switch command {
+            case .cancelWorkout:
+                pendingCancelWorkoutRequested = true
+                pendingCancelWorkoutId = commandWorkoutId
             case .completeCurrentSet:
                 pendingCompleteCurrentSetRequested = true
                 pendingCompleteCurrentSetWorkoutId = commandWorkoutId

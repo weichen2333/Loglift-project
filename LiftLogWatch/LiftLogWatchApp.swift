@@ -379,7 +379,7 @@ struct ActiveWatchWorkoutView: View {
 
     private func cancelFromCompanion() {
         Task {
-            _ = await healthKit.endWorkout()
+            await healthKit.discardWorkout()
             WKInterfaceDevice.current().play(.stop)
             sessionManager.clearWorkoutState()
             isActive = false
@@ -402,9 +402,13 @@ struct ActiveWatchWorkoutView: View {
             if healthKit.isWorkoutRunning {
                 healthKit.pauseWorkout()
             }
-        case .completed, .cancelled:
+        case .completed:
             Task {
                 _ = await healthKit.endWorkout()
+            }
+        case .cancelled:
+            Task {
+                await healthKit.discardWorkout()
             }
         case .planned:
             break
@@ -591,6 +595,8 @@ struct WatchExercisePlanRow: View {
 struct PauseEndView: View {
     @Binding var isActive: Bool
     let state: WatchWorkoutSyncState?
+    @State private var showingFinishConfirmation = false
+    @State private var showingDiscardConfirmation = false
     private var isPaused: Bool { state?.status == .paused }
 
     var body: some View {
@@ -613,25 +619,59 @@ struct PauseEndView: View {
             .buttonStyle(.borderedProminent)
             .tint(isPaused ? .green : .orange)
 
-            Button(role: .destructive) {
-                Task {
-                    let uuid = await WatchHealthKitManager.shared.endWorkout()
-                    WatchSessionManager.shared.sendEndedWorkout(
-                        uuid: uuid,
-                        workoutId: state?.workoutId,
-                        metrics: WatchHealthKitManager.shared.metricsPayload()
-                    )
-                    WKInterfaceDevice.current().play(.success)
-                    WatchSessionManager.shared.clearWorkoutState()
-                    isActive = false
-                }
+            Button {
+                showingFinishConfirmation = true
             } label: {
-                Label("End", systemImage: "xmark.circle.fill")
+                Label("Finish", systemImage: "flag.checkered")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+
+            Button(role: .destructive) {
+                showingDiscardConfirmation = true
+            } label: {
+                Label("Discard", systemImage: "trash")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
         }
         .padding(.horizontal)
+        .confirmationDialog("Finish workout?", isPresented: $showingFinishConfirmation, titleVisibility: .visible) {
+            Button("Save Workout") {
+                finishWorkout()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Discard workout?", isPresented: $showingDiscardConfirmation, titleVisibility: .visible) {
+            Button("Discard Workout", role: .destructive) {
+                discardWorkout()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func finishWorkout() {
+        Task {
+            let uuid = await WatchHealthKitManager.shared.endWorkout()
+            WatchSessionManager.shared.sendEndedWorkout(
+                uuid: uuid,
+                workoutId: state?.workoutId,
+                metrics: WatchHealthKitManager.shared.metricsPayload()
+            )
+            WKInterfaceDevice.current().play(.success)
+            WatchSessionManager.shared.clearWorkoutState()
+            isActive = false
+        }
+    }
+
+    private func discardWorkout() {
+        Task {
+            await WatchHealthKitManager.shared.discardWorkout()
+            WatchSessionManager.shared.sendCommand("cancelWorkout", workoutId: state?.workoutId)
+            WKInterfaceDevice.current().play(.stop)
+            WatchSessionManager.shared.clearWorkoutState()
+            isActive = false
+        }
     }
 }
 
@@ -824,6 +864,22 @@ final class WatchHealthKitManager: NSObject, ObservableObject {
             isWorkoutRunning = false
             return nil
         }
+    }
+
+    func discardWorkout() async {
+        session?.end()
+        guard let builder else {
+            self.session = nil
+            isWorkoutRunning = false
+            return
+        }
+        do {
+            try await builder.endCollection(at: Date())
+        } catch {}
+        builder.discardWorkout()
+        self.builder = nil
+        self.session = nil
+        isWorkoutRunning = false
     }
 
     func metricsPayload() -> WatchWorkoutMetricsPayload {

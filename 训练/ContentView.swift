@@ -124,6 +124,10 @@ struct ContentView: View {
 
         if let activeSession {
             workoutVM.tickRestTimer(for: activeSession)
+            if connectivity.consumeCancelWorkoutCommand(for: activeSession.id) {
+                workoutVM.discard(activeSession, modelContext: modelContext)
+                return
+            }
             if connectivity.consumeCompleteCurrentSetCommand(for: activeSession.id) {
                 workoutVM.completeNextSet(in: activeSession, autoStartRest: settings.first?.autoStartRestTimer ?? true, unit: settings.first?.weightUnit ?? .kg, modelContext: modelContext)
             }
