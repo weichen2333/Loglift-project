@@ -17,6 +17,8 @@ enum LiftLogTab: Hashable {
 enum TrainLaunchIntent: Equatable {
     case none
     case addExercise(workoutId: UUID)
+    case startRoutine(routineId: UUID)
+    case startQuick
 }
 
 struct ContentView: View {
@@ -25,6 +27,7 @@ struct ContentView: View {
     @Query(sort: \Exercise.name) private var exercises: [Exercise]
     @Query(sort: \WorkoutRoutine.name) private var routines: [WorkoutRoutine]
     @Query private var settings: [UserSettings]
+    @Query(sort: \BodyMeasurement.date) private var bodyMeasurements: [BodyMeasurement]
     @State private var selectedTab: LiftLogTab = .dashboard
     @State private var trainLaunchIntent: TrainLaunchIntent = .none
     @State private var workoutVM = WorkoutSessionViewModel()
@@ -32,26 +35,78 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            DashboardView(sessions: sessions, exercises: exercises, routines: routines, settings: settings.first, selectedTab: $selectedTab, trainLaunchIntent: $trainLaunchIntent, workoutVM: workoutVM, routineVM: routineVM)
-                .tabItem { Label("Dashboard", systemImage: "house") }
+            DashboardView(sessions: sessions, exercises: exercises, routines: routines, settings: settings.first, bodyMeasurements: bodyMeasurements, selectedTab: $selectedTab, trainLaunchIntent: $trainLaunchIntent, workoutVM: workoutVM, routineVM: routineVM)
+                .tabItem { Label("概览", systemImage: "house") }
                 .tag(LiftLogTab.dashboard)
             TrainView(exercises: exercises, routines: routines, settings: settings.first, trainLaunchIntent: $trainLaunchIntent, workoutVM: workoutVM, routineVM: routineVM)
-                .tabItem { Label("Train", systemImage: "figure.strengthtraining.traditional") }
+                .tabItem { Label("训练", systemImage: "figure.strengthtraining.traditional") }
                 .tag(LiftLogTab.train)
             WorkoutCalendarView(sessions: sessions, settings: settings.first)
-                .tabItem { Label("Calendar", systemImage: "calendar") }
+                .tabItem { Label("日历", systemImage: "calendar") }
                 .tag(LiftLogTab.calendar)
-            ProgressAnalyticsView(sessions: sessions, exercises: exercises, settings: settings.first)
-                .tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
+            ProgressAnalyticsView(sessions: sessions, exercises: exercises, settings: settings.first, bodyMeasurements: bodyMeasurements)
+                .tabItem { Label("进度", systemImage: "chart.xyaxis.line") }
                 .tag(LiftLogTab.progress)
             SettingsView(settings: settings.first, sessions: sessions, exercises: exercises, routines: routines)
-                .tabItem { Label("Setting", systemImage: "gearshape") }
+                .tabItem { Label("设置", systemImage: "gearshape") }
                 .tag(LiftLogTab.settings)
         }
         .preferredColorScheme(settings.first?.theme.preferredColorScheme)
         .tint(settings.first?.accentColor.swiftUIColor ?? .pink)
+        .environment(\.locale, settings.first?.localePreference.localeIdentifier.map(Locale.init(identifier:)) ?? Locale.current)
         .task {
             SeedData.ensureSeeded(modelContext: modelContext)
+            workoutVM.attachContext(sessions: sessions, routines: routines, settings: settings.first)
+            workoutVM.broadcastIdleSnapshot(routines: routines, hapticOnRestComplete: settings.first?.watchHapticOnRestComplete ?? true, weightUnit: settings.first?.weightUnit ?? .kg)
+            workoutVM.restTimer.onFinish = {
+                if settings.first?.watchHapticOnRestComplete ?? true {
+                    DesignTokens.Haptic.success()
+                }
+                WatchConnectivityManager.shared.sendCommand(.restCompleted)
+            }
+        }
+        .onChange(of: sessions.count) { _, _ in
+            workoutVM.attachContext(sessions: sessions, routines: routines, settings: settings.first)
+        }
+        .onChange(of: routines.count) { _, _ in
+            workoutVM.attachContext(sessions: sessions, routines: routines, settings: settings.first)
+        }
+        .onChange(of: settings.first?.weightUnitRaw) { _, _ in
+            workoutVM.attachContext(sessions: sessions, routines: routines, settings: settings.first)
+        }
+        .onChange(of: settings.first?.oneRepMaxFormulaRaw) { _, _ in
+            workoutVM.attachContext(sessions: sessions, routines: routines, settings: settings.first)
+        }
+        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
+            handleWatchTopLevelCommands()
+        }
+    }
+
+    private func handleWatchTopLevelCommands() {
+        let connectivity = WatchConnectivityManager.shared
+        if connectivity.consumeRequestStateCommand() {
+            if let session = sessions.first(where: { $0.status == .active || $0.status == .paused }) {
+                workoutVM.sync(session)
+            } else {
+                workoutVM.broadcastIdleSnapshot(routines: routines, hapticOnRestComplete: settings.first?.watchHapticOnRestComplete ?? true, weightUnit: settings.first?.weightUnit ?? .kg)
+            }
+        }
+        if connectivity.consumeStartQuickWorkoutCommand() {
+            if !sessions.contains(where: { $0.status == .active || $0.status == .paused }) {
+                let session = workoutVM.startEmptyWorkout(modelContext: modelContext)
+                trainLaunchIntent = .addExercise(workoutId: session.id)
+                selectedTab = .train
+            }
+        }
+        if let routineId = connectivity.consumeStartRoutineWorkoutCommand() {
+            if let routine = routines.first(where: { $0.id == routineId }), !sessions.contains(where: { $0.status == .active || $0.status == .paused }) {
+                _ = routineVM.startWorkout(from: routine, exercises: exercises, modelContext: modelContext)
+                trainLaunchIntent = .none
+                selectedTab = .train
+            }
+        }
+        if connectivity.consumeRestCompletedCommand() {
+            workoutVM.restTimer.skip()
         }
     }
 }
@@ -61,12 +116,14 @@ struct DashboardView: View {
     let exercises: [Exercise]
     let routines: [WorkoutRoutine]
     let settings: UserSettings?
+    let bodyMeasurements: [BodyMeasurement]
     @Binding var selectedTab: LiftLogTab
     @Binding var trainLaunchIntent: TrainLaunchIntent
     @Bindable var workoutVM: WorkoutSessionViewModel
     @Bindable var routineVM: RoutineViewModel
     @Environment(\.modelContext) private var modelContext
     @State private var selectedSession: WorkoutSession?
+    @State private var dashboardVM = DashboardViewModel()
 
     private var todaySession: WorkoutSession? {
         sessions.first { Calendar.current.isDateInToday($0.workoutDate) && $0.status == .completed }
@@ -81,7 +138,7 @@ struct DashboardView: View {
     }
 
     private var weekSummary: WeeklySummary? {
-        AggregationManager.weeklySummaries(from: sessions).last
+        dashboardVM.weekSummary(from: sessions)
     }
 
     private var completedSessions: [WorkoutSession] {
@@ -89,11 +146,11 @@ struct DashboardView: View {
     }
 
     private var streak: Int {
-        TrainingInsights.currentStreak(from: sessions)
+        dashboardVM.currentStreak(from: sessions)
     }
 
     private var recentRecords: [PersonalRecord] {
-        TrainingInsights.recentPersonalRecords(from: sessions, limit: 3)
+        dashboardVM.recentRecords(from: sessions, limit: 3)
     }
 
     private var todayProgress: CGFloat {
@@ -104,23 +161,36 @@ struct DashboardView: View {
         return CGFloat(min(1, max(0, value)))
     }
 
+    private var goalProgress: WeeklyGoalProgress {
+        dashboardVM.goalProgress(settings: settings, sessions: sessions)
+    }
+
+    private var muscleInsights: [MuscleBalanceInsight] {
+        dashboardVM.muscleBalanceInsights(from: sessions, settings: settings)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.lg) {
                     statusCard
+                    WeeklyGoalsCard(progress: goalProgress, weightUnit: settings?.weightUnit.rawValue ?? "kg")
                     weekStats
                     if !recentRecords.isEmpty {
                         personalRecordsCard
                     }
+                    if !muscleInsights.isEmpty {
+                        MuscleBalanceCard(insights: muscleInsights)
+                    }
+                    BodyWeightCard(measurements: bodyMeasurements, unit: settings?.weightUnit ?? .kg)
                     if let lastCompleted {
-                        SectionHeader(title: "Latest Workout", systemImage: "clock.arrow.circlepath")
+                        SectionHeader(title: "上次训练", systemImage: "clock.arrow.circlepath")
                         Button { selectedSession = lastCompleted } label: {
                             WorkoutSummaryCard(session: lastCompleted)
                         }
                         .buttonStyle(.plain)
                     } else {
-                        EmptyStateView(title: "No workout history", message: "Start a quick workout or use a routine to create your first log.")
+                        EmptyStateView(title: "暂无训练记录", message: "开始一次快速训练，或选择模板创建第一条记录。")
                     }
                     quickActions
                 }
@@ -128,7 +198,7 @@ struct DashboardView: View {
                 .padding(.bottom)
                 .padding(.top, 4)
             }
-            .navigationTitle("LiftLog")
+            .navigationTitle("训练")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(item: $selectedSession) { session in
                 WorkoutDetailView(session: session, settings: settings)
@@ -153,16 +223,16 @@ struct DashboardView: View {
                 .frame(width: 64, height: 64)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Today")
+                    Text("今日")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    Text(activeSession != nil ? "Workout in progress" : (todaySession == nil ? "Ready to train" : "Training complete"))
+                    Text(activeSession != nil ? "训练进行中" : (todaySession == nil ? "准备开始" : "今日已完成"))
                         .font(.title2.bold())
                     if let activeSession {
-                        Text("\(activeSession.completedSetCount)/\(activeSession.totalSetCount) sets completed")
+                        Text("已完成 \(activeSession.completedSetCount)/\(activeSession.totalSetCount) 组")
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("\(streak) day streak · \(completedSessions.count) total workouts")
+                        Text("连续训练 \(streak) 天 · 累计 \(completedSessions.count) 次")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -173,18 +243,18 @@ struct DashboardView: View {
 
     private var weekStats: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "This Week", systemImage: "calendar.badge.clock")
+            SectionHeader(title: "本周", systemImage: "calendar.badge.clock")
             HStack(spacing: 10) {
-                StatTile(title: "Sessions", value: "\(weekSummary?.workoutCount ?? 0)", subtitle: "workouts", systemImage: "figure.strengthtraining.traditional")
-                StatTile(title: "Volume", value: "\(Int(weekSummary?.volume ?? 0))", subtitle: settings?.weightUnit.rawValue ?? "kg", systemImage: "scalemass")
-                StatTile(title: "Time", value: (weekSummary?.duration ?? 0).shortDurationText, subtitle: "logged", systemImage: "timer")
+                StatTile(title: "训练", value: "\(weekSummary?.workoutCount ?? 0)", subtitle: "次", systemImage: "figure.strengthtraining.traditional")
+                StatTile(title: "容量", value: "\(Int(weekSummary?.volume ?? 0))", subtitle: settings?.weightUnit.rawValue ?? "kg", systemImage: "scalemass")
+                StatTile(title: "时长", value: (weekSummary?.duration ?? 0).shortDurationText, subtitle: "累计", systemImage: "timer")
             }
         }
     }
 
     private var quickActions: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: activeSession == nil ? "Quick Start" : "Current Workout", systemImage: "bolt.fill")
+            SectionHeader(title: activeSession == nil ? "开始训练" : "当前训练", systemImage: "bolt.fill")
             if let activeSession {
                 LiftCard {
                     VStack(alignment: .leading, spacing: 12) {
@@ -192,17 +262,17 @@ struct DashboardView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(activeSession.name)
                                     .font(.headline)
-                                Text("\(activeSession.completedSetCount)/\(activeSession.totalSetCount) sets · \(activeSession.duration.shortDurationText)")
+                                Text("\(activeSession.completedSetCount)/\(activeSession.totalSetCount) 组 · \(activeSession.duration.shortDurationText)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(activeSession.status == .paused ? "Paused" : "Live")
+                            Text(activeSession.status == .paused ? "已暂停" : "进行中")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(activeSession.status == .paused ? .orange : .green)
                         }
                         if let next = TrainingInsights.nextSet(in: activeSession) {
-                            Text("Next: \(next.exerciseName) #\(next.setIndex) · \(next.weightText) x \(next.reps)")
+                            Text("下一组：\(next.exerciseName) 第\(next.setIndex)组 · \(next.weightText) × \(next.reps)")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -210,7 +280,7 @@ struct DashboardView: View {
                             Button {
                                 continueWorkout()
                             } label: {
-                                Label("Continue", systemImage: "play.circle.fill")
+                                Label("继续训练", systemImage: "play.circle.fill")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
@@ -218,7 +288,7 @@ struct DashboardView: View {
                             Button {
                                 addExerciseFromDashboard(to: activeSession)
                             } label: {
-                                Label("Add", systemImage: "plus.circle")
+                                Label("添加动作", systemImage: "plus.circle")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)
@@ -230,7 +300,7 @@ struct DashboardView: View {
                     Button {
                         startQuickWorkout()
                     } label: {
-                        Label("Quick Workout", systemImage: "plus.circle.fill")
+                        Label("快速训练", systemImage: "plus.circle.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -238,7 +308,7 @@ struct DashboardView: View {
 
                     Menu {
                         if routines.isEmpty {
-                            Button("No templates available") {}
+                            Button("暂无模板") {}
                                 .disabled(true)
                         } else {
                             ForEach(routines.sorted { $0.name < $1.name }) { routine in
@@ -250,7 +320,7 @@ struct DashboardView: View {
                             }
                         }
                     } label: {
-                        Label("Template", systemImage: "list.bullet.rectangle")
+                        Label("使用模板", systemImage: "list.bullet.rectangle")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
@@ -292,7 +362,7 @@ struct DashboardView: View {
 
     private var personalRecordsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Recent PRs", systemImage: "trophy.fill")
+            SectionHeader(title: "最新个人记录", systemImage: "trophy.fill")
             LiftCard {
                 VStack(spacing: 10) {
                     ForEach(Array(recentRecords.enumerated()), id: \.element.id) { index, record in
@@ -306,9 +376,9 @@ struct DashboardView: View {
                             }
                             Spacer()
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text("\(Int(record.bestOneRepMax)) e1RM")
+                                Text("估算 1RM \(Int(record.bestOneRepMax))")
                                     .font(.headline)
-                                Text("\(Int(record.bestWeight)) x \(record.reps)")
+                                Text("\(Int(record.bestWeight)) × \(record.reps)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -343,25 +413,25 @@ struct TrainView: View {
         NavigationStack {
             Group {
                 if let activeSession {
-                    ActiveWorkoutView(session: activeSession, exercises: exercises, settings: settings, workoutVM: workoutVM, showingExercisePicker: $showingExercisePicker)
+                    ActiveWorkoutView(session: activeSession, exercises: exercises, settings: settings, allSessions: sessions, workoutVM: workoutVM, showingExercisePicker: $showingExercisePicker)
                 } else {
                     startPanel
                 }
             }
-            .navigationTitle(activeSession == nil ? "Train" : "Workout")
+            .navigationTitle(activeSession == nil ? "训练" : "训练中")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if activeSession != nil {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { showingExercisePicker = true } label: {
-                            Label("Add Exercise", systemImage: "plus")
+                            Label("添加动作", systemImage: "plus")
                         }
                     }
                 }
             }
             .sheet(isPresented: $showingExercisePicker) {
                 if let activeSession {
-                    ExercisePickerView(exercises: exercises) { exercise in
+                    ExercisePickerView(exercises: exercises, allSessions: sessions, settings: settings) { exercise in
                         workoutVM.addExercise(exercise, to: activeSession, modelContext: modelContext)
                         showingExercisePicker = false
                     }
@@ -392,6 +462,10 @@ struct TrainView: View {
             trainLaunchIntent = .none
             shouldPromptForFirstExercise = false
             showingExercisePicker = true
+        case .startQuick, .startRoutine:
+            // Quick-start intents are consumed at the ContentView level when no
+            // session exists. Once a session exists, fall through to the normal flow.
+            trainLaunchIntent = .none
         }
     }
 
@@ -400,16 +474,16 @@ struct TrainView: View {
             VStack(alignment: .leading, spacing: 14) {
                 LiftCard {
                     VStack(alignment: .leading, spacing: 14) {
-                        Label("Quick Workout", systemImage: "bolt.fill")
+                        Label("快速训练", systemImage: "bolt.fill")
                             .font(.title3.bold())
-                        Text("Unplanned session for today's lifts.")
+                        Text("没有计划？立即开始今天的训练。")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Button {
                             shouldPromptForFirstExercise = true
                             _ = workoutVM.startEmptyWorkout(modelContext: modelContext)
                         } label: {
-                            Label("Start and Add Exercise", systemImage: "plus.circle.fill")
+                            Label("开始并添加动作", systemImage: "plus.circle.fill")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
@@ -419,7 +493,7 @@ struct TrainView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        SectionHeader(title: "Templates", systemImage: "list.bullet.rectangle")
+                        SectionHeader(title: "训练模板", systemImage: "list.bullet.rectangle")
                         Spacer()
                         NavigationLink {
                             RoutineManagerView(routines: routines, exercises: exercises)
@@ -431,7 +505,7 @@ struct TrainView: View {
 
                     if routines.isEmpty {
                         LiftCard {
-                            EmptyStateView(title: "No templates", message: "Create Push, Pull, Legs, or your own routine to start faster next time.")
+                            EmptyStateView(title: "暂无模板", message: "创建推/拉/腿或属于你的训练模板，下次开始更快。")
                         }
                     } else {
                         ForEach(routines.sorted { $0.name < $1.name }) { routine in
@@ -466,7 +540,7 @@ struct RoutineStartCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(routine.name)
                         .font(.headline)
-                    Text(routine.note.isEmpty ? "\(routine.exercises.count) exercises · \(estimatedSets) target sets" : routine.note)
+                    Text(routine.note.isEmpty ? "\(routine.exercises.count) 个动作 · 计划 \(estimatedSets) 组" : routine.note)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -486,7 +560,7 @@ struct RoutineStartCard: View {
                     .buttonStyle(.borderedProminent)
                     Menu {
                         Button(action: onDuplicate) {
-                            Label("Duplicate", systemImage: "doc.on.doc")
+                            Label("复制", systemImage: "doc.on.doc")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -502,12 +576,15 @@ struct ActiveWorkoutView: View {
     let session: WorkoutSession
     let exercises: [Exercise]
     let settings: UserSettings?
+    let allSessions: [WorkoutSession]
     @Bindable var workoutVM: WorkoutSessionViewModel
     @Binding var showingExercisePicker: Bool
     @State private var timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     @State private var showingFinishConfirmation = false
     @State private var showingCancelConfirmation = false
     @State private var currentTime = Date()
+    @State private var editingSetId: UUID?
+    @State private var swappingExerciseId: UUID?
 
     private var progress: Double {
         guard session.totalSetCount > 0 else { return 0 }
@@ -538,7 +615,16 @@ struct ActiveWorkoutView: View {
                 ForEach(session.exercises.sorted { $0.sortOrder < $1.sortOrder }) { workoutExercise in
                     Section {
                         ForEach(workoutExercise.sets.sorted { $0.setIndex < $1.setIndex }) { set in
-                            SetRowView(set: set, restSeconds: workoutExercise.defaultRestSeconds, session: session, workoutVM: workoutVM, settings: settings)
+                            SetRowView(
+                                set: set,
+                                restSeconds: workoutExercise.defaultRestSeconds,
+                                session: session,
+                                workoutExercise: workoutExercise,
+                                workoutVM: workoutVM,
+                                settings: settings,
+                                allSessions: allSessions,
+                                editingSetId: $editingSetId
+                            )
                         }
                         .onDelete { offsets in
                             let sorted = workoutExercise.sets.sorted { $0.setIndex < $1.setIndex }
@@ -548,31 +634,22 @@ struct ActiveWorkoutView: View {
                         }
                         Button {
                             workoutVM.addSet(to: workoutExercise, modelContext: modelContext)
+                            DesignTokens.Haptic.tap()
                         } label: {
-                            Label("Add Set", systemImage: "plus")
+                            Label("添加组", systemImage: "plus")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
                     } header: {
-                        HStack {
-                            Text(workoutExercise.exerciseName)
-                            Spacer()
-                            Text("\(workoutExercise.sets.filter(\.isCompleted).count)/\(workoutExercise.sets.count)")
-                            Menu {
-                                Button {
-                                    workoutVM.addSet(to: workoutExercise, modelContext: modelContext)
-                                } label: {
-                                    Label("Add Set", systemImage: "plus")
-                                }
-                                Button(role: .destructive) {
-                                    workoutVM.deleteExercise(workoutExercise, from: session, modelContext: modelContext)
-                                } label: {
-                                    Label("Remove Exercise", systemImage: "trash")
-                                }
-                            } label: {
-                                Image(systemName: "ellipsis.circle")
-                            }
-                        }
+                        ExerciseSectionHeader(
+                            workoutExercise: workoutExercise,
+                            allSessions: allSessions,
+                            settings: settings,
+                            sessionId: session.id,
+                            onAddSet: { workoutVM.addSet(to: workoutExercise, modelContext: modelContext) },
+                            onSwap: { swappingExerciseId = workoutExercise.id },
+                            onRemove: { workoutVM.deleteExercise(workoutExercise, from: session, modelContext: modelContext) }
+                        )
                     }
                 }
             }
@@ -583,7 +660,7 @@ struct ActiveWorkoutView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("Cancel") {
+                Button("取消") {
                     showingCancelConfirmation = true
                 }
                 .foregroundStyle(.red)
@@ -591,7 +668,7 @@ struct ActiveWorkoutView: View {
             #if os(iOS)
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
-                Button("Done") {
+                Button("完成") {
                     Keyboard.dismiss()
                 }
             }
@@ -601,14 +678,22 @@ struct ActiveWorkoutView: View {
             currentTime = Date()
             workoutVM.restTimer.tick()
             let connectivity = WatchConnectivityManager.shared
-            if connectivity.consumeCompleteCurrentSetCommand(for: session.id) {
-                workoutVM.completeNextSet(in: session, autoStartRest: settings?.autoStartRestTimer ?? true, modelContext: modelContext)
+            let completeCommand = connectivity.consumeCompleteCurrentSetCommand(for: session.id)
+            if completeCommand.consumed {
+                if let setId = completeCommand.setId {
+                    workoutVM.completeSpecificSet(setId: setId, in: session, autoStartRest: settings?.autoStartRestTimer ?? true, modelContext: modelContext)
+                } else {
+                    workoutVM.completeNextSet(in: session, autoStartRest: settings?.autoStartRestTimer ?? true, modelContext: modelContext)
+                }
             }
             if connectivity.consumePauseWorkoutCommand(), session.status == .active {
                 workoutVM.pause(session, modelContext: modelContext)
             }
             if connectivity.consumeResumeWorkoutCommand(), session.status == .paused {
                 workoutVM.resume(session, modelContext: modelContext)
+            }
+            if connectivity.consumeRequestStateCommand() {
+                workoutVM.sync(session)
             }
             let endedCommand = connectivity.consumeEndedWorkoutCommand()
             if endedCommand.requested {
@@ -617,24 +702,55 @@ struct ActiveWorkoutView: View {
                 }
             }
         }
-        .confirmationDialog("Finish this workout?", isPresented: $showingFinishConfirmation, titleVisibility: .visible) {
-            Button("Finish Workout") {
+        .sheet(item: Binding(
+            get: { editingSet },
+            set: { _ in editingSetId = nil }
+        )) { context in
+            SetEditorSheet(
+                set: context.set,
+                session: session,
+                workoutExercise: context.workoutExercise,
+                settings: settings,
+                workoutVM: workoutVM,
+                allSessions: allSessions
+            )
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(item: Binding(
+            get: { swappingExerciseContext },
+            set: { _ in swappingExerciseId = nil }
+        )) { context in
+            ExercisePickerView(exercises: exercises, allSessions: allSessions, settings: settings) { replacement in
+                workoutVM.swapExercise(context, with: replacement, in: session, modelContext: modelContext)
+                swappingExerciseId = nil
+            }
+        }
+        .overlay(alignment: .top) {
+            PRCelebrationOverlay(record: Binding(get: { workoutVM.pendingPRCelebration }, set: { workoutVM.pendingPRCelebration = $0 }))
+        }
+        .alert("此组未完成", isPresented: validationAlertBinding) {
+            Button("好") { workoutVM.clearValidationWarning() }
+        } message: {
+            Text(workoutVM.pendingValidationWarning ?? "")
+        }
+        .confirmationDialog("结束本次训练？", isPresented: $showingFinishConfirmation, titleVisibility: .visible) {
+            Button("结束并保存") {
                 Task { await workoutVM.finish(session, modelContext: modelContext, writeToHealth: settings?.writesWorkoutsToHealth ?? true) }
             }
-            Button("Discard Workout", role: .destructive) {
+            Button("放弃本次训练", role: .destructive) {
                 modelContext.delete(session)
             }
-            Button("Cancel", role: .cancel) {}
+            Button("取消", role: .cancel) {}
         } message: {
-            Text("Completed sets will be saved to history, or discard to delete it without saving.")
+            Text("已完成的组将保存到历史，放弃则不会保留任何记录。")
         }
-        .confirmationDialog("Cancel this workout?", isPresented: $showingCancelConfirmation, titleVisibility: .visible) {
-            Button("Discard Workout", role: .destructive) {
+        .confirmationDialog("放弃本次训练？", isPresented: $showingCancelConfirmation, titleVisibility: .visible) {
+            Button("放弃训练", role: .destructive) {
                 modelContext.delete(session)
             }
-            Button("Resume Training", role: .cancel) {}
+            Button("继续训练", role: .cancel) {}
         } message: {
-            Text("The workout and all recorded sets will be permanently deleted.")
+            Text("将永久删除本次训练及所有已记录的组。")
         }
     }
 
@@ -652,7 +768,7 @@ struct ActiveWorkoutView: View {
                 VStack(alignment: .trailing, spacing: 4) {
                     Text("\(session.completedSetCount)/\(session.totalSetCount)")
                         .font(.title3.bold())
-                    Text("sets")
+                    Text("组")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -660,9 +776,9 @@ struct ActiveWorkoutView: View {
             ProgressView(value: progress)
                 .tint(.accentColor)
             HStack(spacing: 8) {
-                MetricPill(title: "Volume", value: "\(Int(session.totalVolume))")
-                MetricPill(title: "Reps", value: "\(session.totalReps)")
-                MetricPill(title: "Status", value: session.status == .paused ? "Paused" : "Active")
+                MetricPill(title: "容量", value: "\(Int(session.totalVolume))")
+                MetricPill(title: "次数", value: "\(session.totalReps)")
+                MetricPill(title: "状态", value: session.status == .paused ? "已暂停" : "进行中")
             }
         }
         .padding(.vertical, 4)
@@ -673,12 +789,40 @@ struct ActiveWorkoutView: View {
         return max(0, end.timeIntervalSince(session.startedAt))
     }
 
+    private struct EditingContext: Identifiable {
+        let id: UUID
+        let set: SetRecord
+        let workoutExercise: WorkoutExercise
+    }
+
+    private var editingSet: EditingContext? {
+        guard let id = editingSetId else { return nil }
+        for exercise in session.exercises {
+            if let set = exercise.sets.first(where: { $0.id == id }) {
+                return EditingContext(id: id, set: set, workoutExercise: exercise)
+            }
+        }
+        return nil
+    }
+
+    private var swappingExerciseContext: WorkoutExercise? {
+        guard let id = swappingExerciseId else { return nil }
+        return session.exercises.first(where: { $0.id == id })
+    }
+
+    private var validationAlertBinding: Binding<Bool> {
+        Binding(
+            get: { workoutVM.pendingValidationWarning != nil },
+            set: { if !$0 { workoutVM.clearValidationWarning() } }
+        )
+    }
+
     private var activeCommandBar: some View {
         HStack(spacing: 10) {
             Button {
                 workoutVM.completeNextSet(in: session, autoStartRest: settings?.autoStartRestTimer ?? true, modelContext: modelContext)
             } label: {
-                Label("Done Set", systemImage: "checkmark.circle.fill")
+                Label("完成本组", systemImage: "checkmark.circle.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -691,7 +835,7 @@ struct ActiveWorkoutView: View {
                     workoutVM.pause(session, modelContext: modelContext)
                 }
             } label: {
-                Label(session.status == .paused ? "Resume" : "Pause", systemImage: session.status == .paused ? "play.fill" : "pause.fill")
+                Label(session.status == .paused ? "恢复" : "暂停", systemImage: session.status == .paused ? "play.fill" : "pause.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -715,13 +859,13 @@ struct ActiveWorkoutEmptyState: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Build today's workout", systemImage: "plus.circle.fill")
+            Label("搭建今日训练", systemImage: "plus.circle.fill")
                 .font(.title3.bold())
-            Text("Choose the first lift for this session.")
+            Text("选择本次训练的第一个动作。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Button(action: onAddExercise) {
-                Label("Add First Exercise", systemImage: "dumbbell.fill")
+                Label("添加首个动作", systemImage: "dumbbell.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -736,119 +880,282 @@ struct SetRowView: View {
     @Bindable var set: SetRecord
     let restSeconds: Int
     let session: WorkoutSession
+    let workoutExercise: WorkoutExercise
     @Bindable var workoutVM: WorkoutSessionViewModel
     let settings: UserSettings?
+    let allSessions: [WorkoutSession]
+    @Binding var editingSetId: UUID?
 
-    var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("#\(set.setIndex)")
-                    .font(.headline)
-                    .frame(width: 34, alignment: .leading)
-                Picker("Type", selection: $set.setTypeRaw) {
-                    ForEach(SetType.allCases) { type in
-                        Text(type.title).tag(type.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
-                Spacer()
-                Button {
-                    workoutVM.complete(set, in: session, restSeconds: restSeconds, autoStartRest: settings?.autoStartRestTimer ?? true, modelContext: modelContext)
-                } label: {
-                    Image(systemName: set.isCompleted ? "checkmark.circle.fill" : "circle")
-                        .font(.title2)
-                        .foregroundStyle(set.isCompleted ? .green : .secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            HStack {
-                metricFields
-                if settings?.usesRPE ?? true {
-                    TextField("RPE", value: $set.rpe, format: .number.precision(.fractionLength(1)))
-                        .keyboardType(.decimalPad)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 62)
-                }
-            }
-        }
-        .onChange(of: set.weight) { _, newValue in set.weight = max(0, newValue) }
-        .onChange(of: set.actualReps) { _, newValue in set.actualReps = max(0, newValue) }
-        .submitLabel(.done)
-        .onSubmit {
-            Keyboard.dismiss()
+    private var summary: String {
+        TrainingInsights.displayWeight(for: set) + " × \(set.actualReps)"
+    }
+
+    private var rowBackground: Color {
+        switch set.setType {
+        case .warmup: return .orange.opacity(0.10)
+        case .drop: return .purple.opacity(0.10)
+        case .failure: return .red.opacity(0.10)
+        case .restPause: return .blue.opacity(0.08)
+        case .superset: return .green.opacity(0.08)
+        case .normal: return .clear
         }
     }
 
-    @ViewBuilder
-    private var metricFields: some View {
-        switch set.weightMode {
-        case .leftRightSeparate:
-            TextField("L", value: $set.leftWeight, format: .number)
-                .keyboardType(.decimalPad)
-                .textFieldStyle(.roundedBorder)
-            TextField("R", value: $set.rightWeight, format: .number)
-                .keyboardType(.decimalPad)
-                .textFieldStyle(.roundedBorder)
-            Stepper("\(set.actualReps) reps", value: $set.actualReps, in: 0...100)
-                .labelsHidden()
-        case .timeBased:
-            Stepper("\(set.durationSeconds)s", value: $set.durationSeconds, in: 0...3600, step: 5)
-            TextField("sec", value: $set.durationSeconds, format: .number)
-                .keyboardType(.numberPad)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 70)
-        case .distanceBased:
-            TextField("m", value: $set.distanceMeters, format: .number)
-                .keyboardType(.decimalPad)
-                .textFieldStyle(.roundedBorder)
-            TextField("sec", value: $set.durationSeconds, format: .number)
-                .keyboardType(.numberPad)
-                .textFieldStyle(.roundedBorder)
-        case .bodyweight:
-            Stepper("\(set.actualReps) reps", value: $set.actualReps, in: 0...100)
-            TextField("load", value: $set.bodyweightAdditionalLoad, format: .number)
-                .keyboardType(.decimalPad)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 76)
-        case .assistedBodyweight:
-            Stepper("\(set.actualReps) reps", value: $set.actualReps, in: 0...100)
-            TextField("assist", value: $set.assistanceWeight, format: .number)
-                .keyboardType(.decimalPad)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 76)
-        default:
-            TextField(settings?.weightUnit.rawValue ?? "kg", value: $set.weight, format: .number)
-                .keyboardType(.decimalPad)
-                .textFieldStyle(.roundedBorder)
-            Stepper("\(set.actualReps)", value: $set.actualReps, in: 0...100)
-                .labelsHidden()
+    var body: some View {
+        Button {
+            editingSetId = set.id
+        } label: {
+            HStack(alignment: .center, spacing: DesignTokens.Spacing.md) {
+                ZStack {
+                    Circle()
+                        .strokeBorder(set.isCompleted ? Color.green : Color.secondary.opacity(0.4), lineWidth: 1.5)
+                        .frame(width: 30, height: 30)
+                    Text("\(set.setIndex)")
+                        .font(.subheadline.bold().monospacedDigit())
+                        .foregroundStyle(set.isCompleted ? .green : .primary)
+                }
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: DesignTokens.Spacing.xs) {
+                        if set.setType != .normal {
+                            Text(set.setType.title)
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(setTypeColor.opacity(0.18), in: Capsule())
+                                .foregroundStyle(setTypeColor)
+                        }
+                        Text(summary)
+                            .font(.headline.monospacedDigit())
+                            .foregroundStyle(.primary)
+                    }
+                    HStack(spacing: DesignTokens.Spacing.sm) {
+                        if let rpe = set.rpe {
+                            Text("RPE \(String(format: "%.1f", rpe))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(set.isCompleted ? "已完成" : "点击编辑")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button {
+                    let pr = workoutVM.complete(set, in: session, restSeconds: restSeconds, autoStartRest: settings?.autoStartRestTimer ?? true, modelContext: modelContext, allowPRCelebration: settings?.celebratesPersonalRecords ?? true)
+                    if pr != nil { DesignTokens.Haptic.success() } else { DesignTokens.Haptic.tap() }
+                } label: {
+                    Image(systemName: set.isCompleted ? "checkmark.circle.fill" : "circle")
+                        .font(.title)
+                        .foregroundStyle(set.isCompleted ? .green : .accentColor)
+                        .symbolEffect(.bounce, value: set.isCompleted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(set.isCompleted ? "标记为未完成" : "标记为已完成")
+            }
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(rowBackground)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("第 \(set.setIndex) 组：\(summary)，\(set.isCompleted ? "已完成" : "未完成")")
+    }
+
+    private var setTypeColor: Color {
+        switch set.setType {
+        case .warmup: return .orange
+        case .drop: return .purple
+        case .failure: return .red
+        case .restPause: return .blue
+        case .superset: return .green
+        case .normal: return .secondary
         }
     }
 }
 
 struct ExercisePickerView: View {
     let exercises: [Exercise]
+    var allSessions: [WorkoutSession] = []
+    var settings: UserSettings? = nil
     let onSelect: (Exercise) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
+    @State private var selectedMuscle: MuscleGroup?
 
     var filtered: [Exercise] {
-        exercises.filter { searchText.isEmpty || $0.name.localizedCaseInsensitiveContains(searchText) }
+        exercises.filter { exercise in
+            (searchText.isEmpty || exercise.name.localizedCaseInsensitiveContains(searchText) || (exercise.englishName?.localizedCaseInsensitiveContains(searchText) ?? false)) &&
+            (selectedMuscle == nil || exercise.primaryMuscle == selectedMuscle)
+        }
+        .sorted { $0.name < $1.name }
     }
 
     var body: some View {
         NavigationStack {
-            List(filtered) { exercise in
-                Button {
-                    onSelect(exercise)
-                    dismiss()
-                } label: {
-                    Label(exercise.name, systemImage: exercise.imageName ?? "dumbbell")
+            VStack(spacing: 0) {
+                muscleFilter
+                List(filtered) { exercise in
+                    Button {
+                        onSelect(exercise)
+                        dismiss()
+                    } label: {
+                        ExercisePickerRow(
+                            exercise: exercise,
+                            lastSet: TrainingInsights.lastSet(for: exercise.id, in: allSessions, formula: settings?.oneRepMaxFormula ?? .epley)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.plain)
+            }
+            .searchable(text: $searchText, prompt: "搜索动作")
+            .navigationTitle("添加动作")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
                 }
             }
-            .searchable(text: $searchText)
-            .navigationTitle("Add Exercise")
-            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private var muscleFilter: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: DesignTokens.Spacing.sm) {
+                FilterChip(title: "全部", systemImage: "square.grid.2x2", isSelected: selectedMuscle == nil) {
+                    selectedMuscle = nil
+                }
+                ForEach(MuscleGroup.allCases) { muscle in
+                    FilterChip(title: muscle.displayName, systemImage: muscleSymbol(for: muscle), isSelected: selectedMuscle == muscle) {
+                        selectedMuscle = (selectedMuscle == muscle) ? nil : muscle
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, DesignTokens.Spacing.sm)
+        }
+    }
+
+    private func muscleSymbol(for muscle: MuscleGroup) -> String {
+        switch muscle {
+        case .chest: return "figure.arms.open"
+        case .back: return "figure.walk.motion"
+        case .legs: return "figure.run"
+        case .shoulders: return "figure.flexibility"
+        case .arms: return "dumbbell"
+        case .core: return "figure.core.training"
+        case .fullBody: return "figure.strengthtraining.traditional"
+        }
+    }
+}
+
+struct ExercisePickerRow: View {
+    let exercise: Exercise
+    let lastSet: LastSetSummary?
+
+    var body: some View {
+        HStack(spacing: DesignTokens.Spacing.md) {
+            Image(systemName: exercise.imageName ?? "dumbbell")
+                .font(.title3)
+                .foregroundStyle(.tint)
+                .frame(width: 32, height: 32)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(exercise.name)
+                    .font(.subheadline.weight(.semibold))
+                Text("\(exercise.primaryMuscle.displayName) · \(exercise.type.title)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if let last = lastSet {
+                    Text("上次：\(last.headlineText) · \(last.date.formatted(.dateTime.month().day()))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct FilterChip: View {
+    let title: String
+    let systemImage: String?
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: {
+            DesignTokens.Haptic.tap()
+            action()
+        }) {
+            HStack(spacing: DesignTokens.Spacing.xs) {
+                if let systemImage {
+                    Image(systemName: systemImage).font(.caption)
+                }
+                Text(title)
+                    .font(.caption.weight(.semibold))
+            }
+            .padding(.horizontal, DesignTokens.Spacing.md)
+            .padding(.vertical, 6)
+            .background(isSelected ? Color.accentColor : Color(.secondarySystemBackground), in: Capsule())
+            .foregroundStyle(isSelected ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct ExerciseSectionHeader: View {
+    let workoutExercise: WorkoutExercise
+    let allSessions: [WorkoutSession]
+    let settings: UserSettings?
+    let sessionId: UUID
+    let onAddSet: () -> Void
+    let onSwap: () -> Void
+    let onRemove: () -> Void
+
+    private var lastSet: LastSetSummary? {
+        TrainingInsights.lastSet(for: workoutExercise.exerciseId, in: allSessions, excluding: sessionId, formula: settings?.oneRepMaxFormula ?? .epley)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(workoutExercise.exerciseName)
+                    .textCase(nil)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(workoutExercise.sets.filter(\.isCompleted).count)/\(workoutExercise.sets.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Menu {
+                    Button {
+                        onAddSet()
+                    } label: {
+                        Label("添加组", systemImage: "plus")
+                    }
+                    Button {
+                        onSwap()
+                    } label: {
+                        Label("更换动作", systemImage: "arrow.left.arrow.right")
+                    }
+                    Button(role: .destructive) {
+                        onRemove()
+                    } label: {
+                        Label("删除该动作", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("动作菜单")
+            }
+            if let lastSet {
+                LastSetBadge(summary: lastSet)
+            }
         }
     }
 }
@@ -865,20 +1172,20 @@ struct ExerciseLibraryView: View {
                 LiftCard {
                     VStack(spacing: 8) {
                         HStack {
-                            Text("Muscle")
+                            Text("肌群")
                             Spacer()
-                            Picker("Muscle", selection: $viewModel.selectedMuscle) {
-                                Text("All").tag(MuscleGroup?.none)
-                                ForEach(MuscleGroup.allCases) { Text($0.rawValue).tag(Optional($0)) }
+                            Picker("肌群", selection: $viewModel.selectedMuscle) {
+                                Text("全部").tag(MuscleGroup?.none)
+                                ForEach(MuscleGroup.allCases) { Text($0.displayName).tag(Optional($0)) }
                             }
                             .pickerStyle(.menu)
                         }
                         Divider()
                         HStack {
-                            Text("Type")
+                            Text("器械")
                             Spacer()
-                            Picker("Type", selection: $viewModel.selectedType) {
-                                Text("All").tag(ExerciseType?.none)
+                            Picker("器械", selection: $viewModel.selectedType) {
+                                Text("全部").tag(ExerciseType?.none)
                                 ForEach(ExerciseType.allCases) { Text($0.title).tag(Optional($0)) }
                             }
                             .pickerStyle(.menu)
@@ -898,7 +1205,7 @@ struct ExerciseLibraryView: View {
                                     Text(exercise.name)
                                         .foregroundStyle(.primary)
                                         .font(.headline)
-                                    Text("\(exercise.primaryMuscle.rawValue) · \(exercise.type.title)")
+                                    Text("\(exercise.primaryMuscle.displayName) · \(exercise.type.title)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -915,7 +1222,7 @@ struct ExerciseLibraryView: View {
                             Button(role: .destructive) {
                                 viewModel.deleteIfCustom(exercise, modelContext: modelContext)
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label("删除", systemImage: "trash")
                             }
                         }
                     }
@@ -925,11 +1232,11 @@ struct ExerciseLibraryView: View {
             .padding(.bottom)
             .padding(.top, 4)
         }
-        .searchable(text: $viewModel.searchText)
-        .navigationTitle("Library")
+        .searchable(text: $viewModel.searchText, prompt: "搜索动作")
+        .navigationTitle("动作库")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            Button { showingAdd = true } label: { Label("Add", systemImage: "plus") }
+            Button { showingAdd = true } label: { Label("新建", systemImage: "plus") }
         }
         .sheet(isPresented: $showingAdd) {
             AddExerciseView(viewModel: viewModel)
@@ -948,20 +1255,20 @@ struct AddExerciseView: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("Name", text: $name)
-                Picker("Primary muscle", selection: $muscle) {
-                    ForEach(MuscleGroup.allCases) { Text($0.rawValue).tag($0) }
+                TextField("名称", text: $name)
+                Picker("主要肌群", selection: $muscle) {
+                    ForEach(MuscleGroup.allCases) { Text($0.displayName).tag($0) }
                 }
-                Picker("Equipment", selection: $type) {
+                Picker("器械类型", selection: $type) {
                     ForEach(ExerciseType.allCases) { Text($0.title).tag($0) }
                 }
             }
-            .navigationTitle("New Exercise")
+            .navigationTitle("新建动作")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("保存") {
                         viewModel.addExercise(modelContext: modelContext, name: name, muscle: muscle, type: type)
                         dismiss()
                     }
@@ -977,20 +1284,20 @@ struct ExerciseEditorView: View {
 
     var body: some View {
         Form {
-            TextField("Name", text: $exercise.name)
-            TextField("English name", text: Binding($exercise.englishName, replacingNilWith: ""))
-            Picker("Primary muscle", selection: $exercise.primaryMuscleRaw) {
-                ForEach(MuscleGroup.allCases) { Text($0.rawValue).tag($0.rawValue) }
+            TextField("名称", text: $exercise.name)
+            TextField("英文名称", text: Binding($exercise.englishName, replacingNilWith: ""))
+            Picker("主要肌群", selection: $exercise.primaryMuscleRaw) {
+                ForEach(MuscleGroup.allCases) { Text($0.displayName).tag($0.rawValue) }
             }
-            Picker("Equipment", selection: $exercise.typeRaw) {
+            Picker("器械类型", selection: $exercise.typeRaw) {
                 ForEach(ExerciseType.allCases) { Text($0.title).tag($0.rawValue) }
             }
-            Picker("Default input", selection: $exercise.defaultWeightModeRaw) {
+            Picker("默认输入方式", selection: $exercise.defaultWeightModeRaw) {
                 ForEach(WeightMode.allCases) { Text($0.title).tag($0.rawValue) }
             }
-            Toggle("Track left/right separately", isOn: $exercise.tracksLeftRightSeparately)
-            TextField("Instructions", text: $exercise.instructions, axis: .vertical)
-            TextField("Cautions", text: $exercise.cautions, axis: .vertical)
+            Toggle("分别记录左右两侧", isOn: $exercise.tracksLeftRightSeparately)
+            TextField("动作要点", text: $exercise.instructions, axis: .vertical)
+            TextField("注意事项", text: $exercise.cautions, axis: .vertical)
         }
         .navigationTitle(exercise.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -1008,7 +1315,7 @@ struct RoutineManagerView: View {
     var body: some View {
         List {
             if routines.isEmpty {
-                EmptyStateView(title: "No templates", message: "Create reusable routines for push, pull, legs, or full-body training.")
+                EmptyStateView(title: "暂无模板", message: "为推/拉/腿或全身训练建立可复用的模板。")
             } else {
                 ForEach(routines.sorted { $0.name < $1.name }) { routine in
                     NavigationLink {
@@ -1017,7 +1324,7 @@ struct RoutineManagerView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(routine.name)
                                 .font(.headline)
-                            Text("\(routine.exercises.count) exercises · \(routine.note)")
+                            Text("\(routine.exercises.count) 个动作 · \(routine.note)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -1027,41 +1334,41 @@ struct RoutineManagerView: View {
                         Button {
                             viewModel.duplicate(routine, modelContext: modelContext)
                         } label: {
-                            Label("Duplicate", systemImage: "doc.on.doc")
+                            Label("复制", systemImage: "doc.on.doc")
                         }
                         .tint(.accentColor)
                         Button(role: .destructive) {
                             routineToDelete = routine
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label("删除", systemImage: "trash")
                         }
                     }
                 }
             }
         }
-        .navigationTitle("Templates")
+        .navigationTitle("训练模板")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             Button { showingCreate = true } label: {
-                Label("New Template", systemImage: "plus")
+                Label("新建模板", systemImage: "plus")
             }
         }
         .sheet(isPresented: $showingCreate) {
             NewRoutineView(viewModel: viewModel)
         }
-        .confirmationDialog("Delete this template?", isPresented: Binding(
+        .confirmationDialog("删除该模板？", isPresented: Binding(
             get: { routineToDelete != nil },
             set: { if !$0 { routineToDelete = nil } }
         ), titleVisibility: .visible) {
-            Button("Delete Template", role: .destructive) {
+            Button("删除模板", role: .destructive) {
                 if let routineToDelete {
                     viewModel.delete(routineToDelete, modelContext: modelContext)
                 }
                 routineToDelete = nil
             }
-            Button("Cancel", role: .cancel) {}
+            Button("取消", role: .cancel) {}
         } message: {
-            Text("\(routineToDelete?.name ?? "This template") will be removed. Existing workout history stays unchanged.")
+            Text("\(routineToDelete?.name ?? "该模板")将被删除，已有的训练历史不会受影响。")
         }
     }
 }
@@ -1076,17 +1383,17 @@ struct NewRoutineView: View {
     var body: some View {
         NavigationStack {
             Form {
-                TextField("Name", text: $name)
-                TextField("Notes", text: $note, axis: .vertical)
+                TextField("名称", text: $name)
+                TextField("备注", text: $note, axis: .vertical)
             }
-            .navigationTitle("New Template")
+            .navigationTitle("新建模板")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("取消") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
+                    Button("创建") {
                         _ = viewModel.createRoutine(name: name, note: note, modelContext: modelContext)
                         dismiss()
                     }
@@ -1106,14 +1413,14 @@ struct RoutineEditorView: View {
 
     var body: some View {
         Form {
-            Section("Template") {
-                TextField("Name", text: $routine.name)
-                TextField("Notes", text: $routine.note, axis: .vertical)
+            Section("模板") {
+                TextField("名称", text: $routine.name)
+                TextField("备注", text: $routine.note, axis: .vertical)
             }
-            Section("Exercises") {
+            Section("动作") {
                 let sortedExercises = routine.exercises.sorted { $0.sortOrder < $1.sortOrder }
                 if sortedExercises.isEmpty {
-                    EmptyStateView(title: "No exercises", message: "Add exercises to make this template startable.")
+                    EmptyStateView(title: "暂无动作", message: "至少添加一个动作后才能开始训练。")
                 } else {
                     ForEach(sortedExercises) { item in
                         RoutineExerciseRow(item: item)
@@ -1128,7 +1435,7 @@ struct RoutineEditorView: View {
                 Button {
                     showingExercisePicker = true
                 } label: {
-                    Label("Add Exercise", systemImage: "plus")
+                    Label("添加动作", systemImage: "plus")
                 }
             }
         }
@@ -1157,13 +1464,13 @@ struct RoutineExerciseRow: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(item.exerciseName)
                 .font(.headline)
-            Stepper("Sets: \(item.targetSets)", value: $item.targetSets, in: 1...12)
-            Stepper("Reps: \(item.targetReps)", value: $item.targetReps, in: 0...100)
-            TextField("Target weight", value: $item.targetWeight, format: .number)
+            Stepper("组数：\(item.targetSets)", value: $item.targetSets, in: 1...12)
+            Stepper("次数：\(item.targetReps)", value: $item.targetReps, in: 0...100)
+            TextField("目标重量", value: $item.targetWeight, format: .number)
                 .keyboardType(.decimalPad)
-            Stepper("Rest: \(item.restSeconds)s", value: $item.restSeconds, in: 0...600, step: 15)
-            Toggle("Warm-up first set", isOn: $item.enableWarmupSets)
-            Toggle("Ramping weight", isOn: $item.enableRampingWeight)
+            Stepper("休息：\(item.restSeconds) 秒", value: $item.restSeconds, in: 0...600, step: 15)
+            Toggle("首组为热身", isOn: $item.enableWarmupSets)
+            Toggle("递增重量", isOn: $item.enableRampingWeight)
         }
         .onChange(of: item.targetWeight) { _, newValue in item.targetWeight = max(0, newValue) }
         .onChange(of: item.targetSets) { _, newValue in item.targetSets = max(1, newValue) }
@@ -1185,9 +1492,9 @@ struct WorkoutCalendarView: View {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     let monthSessions = viewModel.sessionsInDisplayedMonth(from: sessions)
                     HStack(spacing: 10) {
-                        StatTile(title: "Month", value: "\(monthSessions.count)", subtitle: "workouts", systemImage: "calendar")
-                        StatTile(title: "Volume", value: "\(Int(monthSessions.reduce(0) { $0 + $1.totalVolume }))", subtitle: settings?.weightUnit.rawValue ?? "kg", systemImage: "scalemass")
-                        StatTile(title: "Time", value: monthSessions.reduce(0) { $0 + $1.duration }.shortDurationText, subtitle: "logged", systemImage: "timer")
+                        StatTile(title: "本月", value: "\(monthSessions.count)", subtitle: "次", systemImage: "calendar")
+                        StatTile(title: "容量", value: "\(Int(monthSessions.reduce(0) { $0 + $1.totalVolume }))", subtitle: settings?.weightUnit.rawValue ?? "kg", systemImage: "scalemass")
+                        StatTile(title: "时长", value: monthSessions.reduce(0) { $0 + $1.duration }.shortDurationText, subtitle: "累计", systemImage: "timer")
                     }
 
                     LiftCard {
@@ -1201,38 +1508,65 @@ struct WorkoutCalendarView: View {
                                         .frame(maxWidth: .infinity)
                                 }
                             }
+                            let monthSessions = viewModel.sessionsInDisplayedMonth(from: sessions)
+                            let maxVolume = monthSessions.map(\.totalVolume).max() ?? 1
                             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 7), spacing: 10) {
                                 ForEach(Array(viewModel.monthGridDays().enumerated()), id: \.offset) { _, day in
                                     if let day {
-                                        let count = viewModel.sessions(on: day, from: sessions).count
+                                        let daySessions = viewModel.sessions(on: day, from: sessions)
+                                        let dayVolume = daySessions.reduce(0) { $0 + $1.totalVolume }
+                                        let intensity = maxVolume > 0 ? min(1, dayVolume / maxVolume) : 0
                                         Button {
                                             viewModel.selectedDate = day
+                                            DesignTokens.Haptic.tap()
                                         } label: {
                                             VStack(spacing: 4) {
                                                 Text(day.formatted(.dateTime.day()))
                                                     .font(.subheadline.weight(Calendar.current.isDateInToday(day) ? .bold : .regular))
                                                     .frame(width: 34, height: 30)
                                                     .background(Calendar.current.isDate(day, inSameDayAs: viewModel.selectedDate) ? Color.accentColor.opacity(0.2) : .clear, in: Circle())
-                                                Circle()
-                                                    .fill(count > 0 ? .green : .clear)
-                                                    .frame(width: 6, height: 6)
+                                                RoundedRectangle(cornerRadius: 2)
+                                                    .fill(daySessions.isEmpty ? Color.clear : Color.accentColor.opacity(0.35 + intensity * 0.55))
+                                                    .frame(width: 22, height: 4)
+                                                    .overlay(alignment: .leading) {
+                                                        if !daySessions.isEmpty {
+                                                            RoundedRectangle(cornerRadius: 2)
+                                                                .fill(Color.accentColor)
+                                                                .frame(width: 22 * CGFloat(intensity), height: 4)
+                                                        }
+                                                    }
                                             }
                                         }
                                         .buttonStyle(.plain)
+                                        .accessibilityLabel("\(day.formatted(date: .complete, time: .omitted))，\(daySessions.count) 次训练")
                                     } else {
                                         Color.clear.frame(height: 40)
                                     }
                                 }
                             }
+                            .gesture(
+                                DragGesture(minimumDistance: 30)
+                                    .onEnded { value in
+                                        let direction = value.translation.width
+                                        let calendar = Calendar.current
+                                        if direction < -40 {
+                                            viewModel.selectedDate = calendar.date(byAdding: .month, value: 1, to: viewModel.selectedDate) ?? viewModel.selectedDate
+                                            DesignTokens.Haptic.tap()
+                                        } else if direction > 40 {
+                                            viewModel.selectedDate = calendar.date(byAdding: .month, value: -1, to: viewModel.selectedDate) ?? viewModel.selectedDate
+                                            DesignTokens.Haptic.tap()
+                                        }
+                                    }
+                            )
                         }
                     }
 
                     SectionHeader(title: viewModel.selectedDate.formatted(date: .abbreviated, time: .omitted), systemImage: "list.bullet.clipboard")
-                    
+
                     let daySessions = viewModel.sessions(on: viewModel.selectedDate, from: sessions)
                     if daySessions.isEmpty {
                         LiftCard {
-                            EmptyStateView(title: "No workouts", message: "Training days will appear here.")
+                            EmptyStateView(title: "当日无训练", message: "训练日将在此显示。")
                         }
                     } else {
                         ForEach(daySessions) { session in
@@ -1244,7 +1578,7 @@ struct WorkoutCalendarView: View {
                                 Button(role: .destructive) {
                                     modelContext.delete(session)
                                 } label: {
-                                    Label("Delete", systemImage: "trash")
+                                    Label("删除", systemImage: "trash")
                                 }
                             }
                         }
@@ -1254,7 +1588,7 @@ struct WorkoutCalendarView: View {
                 .padding(.bottom)
                 .padding(.top, 4)
             }
-            .navigationTitle("Calendar")
+            .navigationTitle("日历")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(item: $selectedSession) { WorkoutDetailView(session: $0, settings: settings) }
         }
@@ -1275,6 +1609,7 @@ struct ProgressAnalyticsView: View {
     let sessions: [WorkoutSession]
     let exercises: [Exercise]
     let settings: UserSettings?
+    let bodyMeasurements: [BodyMeasurement]
     @State private var viewModel = ProgressViewModel()
 
     private var filteredSessions: [WorkoutSession] {
@@ -1288,11 +1623,12 @@ struct ProgressAnalyticsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: DesignTokens.Spacing.lg) {
                     controls
                     overviewSection
                     trendSection
                     exerciseSection
+                    BodyWeightCard(measurements: bodyMeasurements, unit: settings?.weightUnit ?? .kg)
                     muscleSection
                     heartRateSection
                 }
@@ -1300,7 +1636,7 @@ struct ProgressAnalyticsView: View {
                 .padding(.bottom)
                 .padding(.top, 4)
             }
-            .navigationTitle("Progress")
+            .navigationTitle("进度")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear(perform: chooseDefaultExercise)
         }
@@ -1308,14 +1644,14 @@ struct ProgressAnalyticsView: View {
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Range", selection: $viewModel.selectedRange) {
+            Picker("时间范围", selection: $viewModel.selectedRange) {
                 ForEach(ProgressTimeRange.allCases) { range in
                     Text(range.rawValue).tag(range)
                 }
             }
             .pickerStyle(.segmented)
 
-            Picker("Metric", selection: $viewModel.selectedTrendMetric) {
+            Picker("指标", selection: $viewModel.selectedTrendMetric) {
                 ForEach(ProgressTrendMetric.allCases) { metric in
                     Text(metric.rawValue).tag(metric)
                 }
@@ -1331,36 +1667,36 @@ struct ProgressAnalyticsView: View {
         let records = TrainingInsights.personalRecords(from: filteredSessions)
 
         return VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Overview", systemImage: "chart.line.uptrend.xyaxis")
+            SectionHeader(title: "总览", systemImage: "chart.line.uptrend.xyaxis")
             HStack(spacing: 10) {
-                StatTile(title: "Workouts", value: "\(filteredSessions.count)", subtitle: viewModel.selectedRange.rawValue, systemImage: "calendar")
-                StatTile(title: "Volume", value: "\(Int(volume))", subtitle: settings?.weightUnit.rawValue ?? "kg", systemImage: "scalemass")
-                StatTile(title: "Time", value: duration.shortDurationText, subtitle: "trained", systemImage: "timer")
+                StatTile(title: "训练次数", value: "\(filteredSessions.count)", subtitle: viewModel.selectedRange.rawValue, systemImage: "calendar")
+                StatTile(title: "总容量", value: "\(Int(volume))", subtitle: settings?.weightUnit.rawValue ?? "kg", systemImage: "scalemass")
+                StatTile(title: "训练时长", value: duration.shortDurationText, subtitle: "累计", systemImage: "timer")
             }
             HStack(spacing: 10) {
-                StatTile(title: "Sets", value: "\(sets)", subtitle: "completed", systemImage: "checklist")
-                StatTile(title: "PRs", value: "\(records.count)", subtitle: "tracked", systemImage: "trophy")
-                StatTile(title: "Streak", value: "\(TrainingInsights.currentStreak(from: sessions))", subtitle: "days", systemImage: "flame")
+                StatTile(title: "完成组", value: "\(sets)", subtitle: "组", systemImage: "checklist")
+                StatTile(title: "个人记录", value: "\(records.count)", subtitle: "项", systemImage: "trophy")
+                StatTile(title: "连续天数", value: "\(TrainingInsights.currentStreak(from: sessions))", subtitle: "天", systemImage: "flame")
             }
         }
     }
 
     private var trendSection: some View {
-        ChartCard(title: "Weekly Trend") {
+        ChartCard(title: "每周趋势") {
             if weeklySummaries.isEmpty {
-                EmptyStateView(title: "No weekly data", message: "Complete workouts to build weekly trends.")
+                EmptyStateView(title: "暂无周数据", message: "完成训练后这里会显示每周趋势。")
             } else {
                 Chart(weeklySummaries) { summary in
                     switch viewModel.selectedTrendMetric {
                     case .frequency:
-                        BarMark(x: .value("Week", summary.weekStart, unit: .weekOfYear), y: .value("Workouts", summary.workoutCount))
+                        BarMark(x: .value("周", summary.weekStart, unit: .weekOfYear), y: .value("次数", summary.workoutCount))
                     case .volume:
-                        LineMark(x: .value("Week", summary.weekStart, unit: .weekOfYear), y: .value("Volume", summary.volume))
-                        PointMark(x: .value("Week", summary.weekStart, unit: .weekOfYear), y: .value("Volume", summary.volume))
+                        LineMark(x: .value("周", summary.weekStart, unit: .weekOfYear), y: .value("容量", summary.volume))
+                        PointMark(x: .value("周", summary.weekStart, unit: .weekOfYear), y: .value("容量", summary.volume))
                     case .duration:
-                        BarMark(x: .value("Week", summary.weekStart, unit: .weekOfYear), y: .value("Minutes", summary.duration / 60))
+                        BarMark(x: .value("周", summary.weekStart, unit: .weekOfYear), y: .value("分钟", summary.duration / 60))
                     case .sets:
-                        BarMark(x: .value("Week", summary.weekStart, unit: .weekOfYear), y: .value("Sets", summary.completedSets))
+                        BarMark(x: .value("周", summary.weekStart, unit: .weekOfYear), y: .value("组数", summary.completedSets))
                     }
                 }
             }
@@ -1369,36 +1705,41 @@ struct ProgressAnalyticsView: View {
 
     private var exerciseSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Exercise", systemImage: "dumbbell")
-            Picker("Exercise", selection: $viewModel.selectedExerciseId) {
-                Text("Select exercise").tag(UUID?.none)
+            SectionHeader(title: "动作分析", systemImage: "dumbbell")
+            Picker("动作", selection: $viewModel.selectedExerciseId) {
+                Text("选择动作").tag(UUID?.none)
                 ForEach(exercises) { exercise in
                     Text(exercise.name).tag(Optional(exercise.id))
                 }
             }
             .pickerStyle(.menu)
 
-            let trend = viewModel.exerciseTrend(exerciseId: viewModel.selectedExerciseId, sessions: sessions)
+            let trend = viewModel.exerciseTrend(exerciseId: viewModel.selectedExerciseId, sessions: sessions, formula: settings?.oneRepMaxFormula ?? .epley)
             if trend.isEmpty {
                 LiftCard {
-                    EmptyStateView(title: "No exercise trend", message: "Pick an exercise with completed sets to see strength and volume changes.")
+                    EmptyStateView(title: "暂无该动作数据", message: "选择有完成记录的动作以查看力量与容量趋势。")
                 }
             } else {
+                let formula = settings?.oneRepMaxFormula ?? .epley
+                let gain = viewModel.selectedExerciseId.flatMap { TrainingInsights.strengthGain(for: $0, in: sessions, windowWeeks: 8, formula: formula) }
                 HStack(spacing: 10) {
-                    StatTile(title: "Best", value: "\(Int(trend.map(\.weight).max() ?? 0))", subtitle: settings?.weightUnit.rawValue ?? "kg", systemImage: "arrow.up")
-                    StatTile(title: "Best 1RM", value: "\(Int(trend.map(\.oneRM).max() ?? 0))", subtitle: "Epley", systemImage: "bolt")
-                    StatTile(title: "Sessions", value: "\(trend.count)", subtitle: "logged", systemImage: "number")
+                    StatTile(title: "最大", value: "\(Int(trend.map(\.weight).max() ?? 0))", subtitle: settings?.weightUnit.rawValue ?? "kg", systemImage: "arrow.up")
+                    StatTile(title: "最大 1RM", value: "\(Int(trend.map(\.oneRM).max() ?? 0))", subtitle: formula.displayName, systemImage: "bolt")
+                    StatTile(title: "8 周涨幅", value: gain.map { String(format: "%+.0f%%", $0) } ?? "—", subtitle: "1RM", systemImage: "chart.line.uptrend.xyaxis")
                 }
-                ChartCard(title: "Strength Trend") {
+                HStack(spacing: 10) {
+                    StatTile(title: "训练次数", value: "\(trend.count)", subtitle: "次", systemImage: "number")
+                }
+                ChartCard(title: "力量趋势") {
                     Chart(trend, id: \.date) { item in
-                        LineMark(x: .value("Date", item.date), y: .value("Top Weight", item.weight))
-                        LineMark(x: .value("Date", item.date), y: .value("Estimated 1RM", item.oneRM))
+                        LineMark(x: .value("日期", item.date), y: .value("最大重量", item.weight))
+                        LineMark(x: .value("日期", item.date), y: .value("估算 1RM", item.oneRM))
                             .foregroundStyle(.orange)
                     }
                 }
-                ChartCard(title: "Exercise Volume") {
+                ChartCard(title: "动作容量") {
                     Chart(trend, id: \.date) { item in
-                        BarMark(x: .value("Date", item.date, unit: .day), y: .value("Volume", item.volume))
+                        BarMark(x: .value("日期", item.date, unit: .day), y: .value("容量", item.volume))
                     }
                 }
             }
@@ -1406,14 +1747,15 @@ struct ProgressAnalyticsView: View {
     }
 
     private var muscleSection: some View {
-        ChartCard(title: "Muscle Volume") {
+        ChartCard(title: "肌群容量") {
             let volumes = viewModel.muscleVolumes(from: sessions).filter { $0.volume.isFinite && $0.volume > 0 }
             if volumes.isEmpty {
-                EmptyStateView(title: "No muscle volume", message: "Completed weighted sets will appear here.")
+                EmptyStateView(title: "暂无肌群数据", message: "完成的有重量训练组将在此呈现。")
             } else {
                 Chart(volumes) { item in
-                    BarMark(x: .value("Volume", item.volume), y: .value("Muscle", item.muscle))
-                        .foregroundStyle(by: .value("Muscle", item.muscle))
+                    let muscleName = MuscleGroup(rawValue: item.muscle)?.displayName ?? item.muscle
+                    BarMark(x: .value("容量", item.volume), y: .value("肌群", muscleName))
+                        .foregroundStyle(by: .value("肌群", muscleName))
                 }
             }
         }
@@ -1422,12 +1764,12 @@ struct ProgressAnalyticsView: View {
     private var heartRateSection: some View {
         let samples = viewModel.heartRateSamples(from: sessions)
         let zones = AggregationManager.heartRateZones(samples: samples, maxHeartRate: settings?.maxHeartRate ?? 190)
-        return ChartCard(title: "Heart Rate Zones") {
+        return ChartCard(title: "心率区间") {
             if samples.isEmpty {
-                EmptyStateView(title: "No heart rate data", message: "Apple Watch workouts will populate heart rate analysis.")
+                EmptyStateView(title: "暂无心率数据", message: "通过 Apple Watch 训练以记录心率。")
             } else {
                 Chart(zones) { zone in
-                    BarMark(x: .value("Zone", zone.name), y: .value("Samples", zone.sampleCount))
+                    BarMark(x: .value("区间", zone.name), y: .value("样本", zone.sampleCount))
                         .foregroundStyle(.red.gradient)
                 }
             }
@@ -1455,11 +1797,11 @@ struct WorkoutDetailView: View {
                 Section {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 16) {
-                            StatTile(title: "Duration", value: session.duration.shortDurationText, subtitle: "total")
-                            StatTile(title: "Volume", value: "\(Int(session.totalVolume))", subtitle: settings?.weightUnit.rawValue ?? "kg")
-                            StatTile(title: "Sets", value: "\(session.completedSetCount)", subtitle: "completed")
-                            StatTile(title: "Avg HR", value: session.averageHeartRate.map { "\(Int($0))" } ?? "--", subtitle: "bpm")
-                            StatTile(title: "Energy", value: session.activeEnergyKcal.map { "\(Int($0))" } ?? "--", subtitle: "kcal")
+                            StatTile(title: "时长", value: session.duration.shortDurationText, subtitle: "总计")
+                            StatTile(title: "容量", value: "\(Int(session.totalVolume))", subtitle: settings?.weightUnit.rawValue ?? "kg")
+                            StatTile(title: "组数", value: "\(session.completedSetCount)", subtitle: "已完成")
+                            StatTile(title: "平均心率", value: session.averageHeartRate.map { "\(Int($0))" } ?? "--", subtitle: "次/分")
+                            StatTile(title: "消耗", value: session.activeEnergyKcal.map { "\(Int($0))" } ?? "--", subtitle: "千卡")
                         }
                         .padding(.vertical, 8)
                     }
@@ -1467,13 +1809,13 @@ struct WorkoutDetailView: View {
                     .listRowBackground(Color.clear)
                 }
                 if !session.heartRateSamples.isEmpty {
-                    Section("Heart Rate") {
+                    Section("心率") {
                         Chart(session.heartRateSamples.sorted { $0.timestamp < $1.timestamp }) { sample in
-                            LineMark(x: .value("Time", sample.timestamp), y: .value("BPM", sample.bpm))
+                            LineMark(x: .value("时间", sample.timestamp), y: .value("BPM", sample.bpm))
                         }
                         .frame(height: 180)
                         Chart(AggregationManager.heartRateZones(samples: session.heartRateSamples, maxHeartRate: settings?.maxHeartRate ?? 190)) { zone in
-                            BarMark(x: .value("Zone", zone.name), y: .value("Samples", zone.sampleCount))
+                            BarMark(x: .value("区间", zone.name), y: .value("样本", zone.sampleCount))
                         }
                         .frame(height: 160)
                     }
@@ -1482,7 +1824,7 @@ struct WorkoutDetailView: View {
                     Section(exercise.exerciseName) {
                         ForEach(exercise.sets.sorted { $0.setIndex < $1.setIndex }) { set in
                             HStack {
-                                Text("#\(set.setIndex) \(set.setType.title)")
+                                Text("第\(set.setIndex)组 · \(set.setType.title)")
                                 Spacer()
                                 Text(setSummary(set))
                                     .foregroundStyle(.secondary)
@@ -1491,14 +1833,14 @@ struct WorkoutDetailView: View {
                     }
                 }
                 if !session.note.isEmpty {
-                    Section("Notes") { Text(session.note) }
+                    Section("备注") { Text(session.note) }
                 }
-                
+
                 Section {
                     Button(role: .destructive) {
                         showingDeleteConfirmation = true
                     } label: {
-                        Label("Delete Workout", systemImage: "trash")
+                        Label("删除此训练", systemImage: "trash")
                             .frame(maxWidth: .infinity)
                             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     }
@@ -1508,24 +1850,24 @@ struct WorkoutDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button("完成") { dismiss() }
                 }
                 ToolbarItem(placement: .destructiveAction) {
                     Button(role: .destructive) {
                         showingDeleteConfirmation = true
                     } label: {
-                        Label("Delete", systemImage: "trash")
+                        Label("删除", systemImage: "trash")
                     }
                 }
             }
-            .confirmationDialog("Delete this workout?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
-                Button("Delete Workout", role: .destructive) {
+            .confirmationDialog("删除此训练？", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+                Button("删除", role: .destructive) {
                     workoutVM.delete(session, modelContext: modelContext)
                     dismiss()
                 }
-                Button("Cancel", role: .cancel) {}
+                Button("取消", role: .cancel) {}
             } message: {
-                Text("This removes the workout from LiftLog history.")
+                Text("将从历史记录中移除此训练。")
             }
         }
     }
@@ -1533,13 +1875,13 @@ struct WorkoutDetailView: View {
     private func setSummary(_ set: SetRecord) -> String {
         switch set.weightMode {
         case .leftRightSeparate:
-            return "\(Int(set.leftWeight))/\(Int(set.rightWeight)) x \(set.actualReps)"
+            return "\(Int(set.leftWeight))/\(Int(set.rightWeight)) × \(set.actualReps)"
         case .timeBased:
-            return "\(set.durationSeconds)s"
+            return "\(set.durationSeconds) 秒"
         case .distanceBased:
-            return "\(Int(set.distanceMeters))m / \(set.durationSeconds)s"
+            return "\(Int(set.distanceMeters)) 米 / \(set.durationSeconds) 秒"
         default:
-            return "\(Int(set.weight)) x \(set.actualReps)"
+            return "\(Int(set.weight)) × \(set.actualReps)"
         }
     }
 }
@@ -1551,6 +1893,7 @@ struct SettingsView: View {
     let exercises: [Exercise]
     let routines: [WorkoutRoutine]
     @State private var workoutVM = WorkoutSessionViewModel()
+    @State private var settingsVM = SettingsViewModel()
     @State private var exportPreview = ""
     @State private var exportURL: URL?
     @State private var statusMessage = ""
@@ -1558,6 +1901,7 @@ struct SettingsView: View {
     @State private var watchStatus = "Checking"
     @State private var showingClearHistoryConfirmation = false
     @State private var showingResetSamplesConfirmation = false
+    @State private var showingBodyWeightHistory = false
 
     private var completedWorkoutCount: Int {
         sessions.filter { $0.status == .completed }.count
@@ -1569,10 +1913,16 @@ struct SettingsView: View {
 
     private var watchConnectivityStatus: String {
         let manager = WatchConnectivityManager.shared
-        guard manager.isSupported else { return "Unavailable" }
-        guard manager.activationStateDescription == "Activated" else { return manager.activationStateDescription }
-        guard manager.isCounterpartAppInstalled else { return "Watch app not installed" }
-        return manager.isReachable ? "Reachable" : "Not reachable"
+        guard manager.isSupported else { return "不可用" }
+        guard manager.activationStateDescription == "Activated" else {
+            switch manager.activationStateDescription {
+            case "Not activated": return "未激活"
+            case "Inactive": return "未连接"
+            default: return manager.activationStateDescription
+            }
+        }
+        guard manager.isCounterpartAppInstalled else { return "手表 App 未安装" }
+        return manager.isReachable ? "已连接" : "暂时不可达"
     }
 
     var body: some View {
@@ -1591,32 +1941,62 @@ struct SettingsView: View {
                     if let settings {
                         EditableSettingsSection(settings: settings, healthStatus: healthStatus)
                     } else {
-                        SectionHeader(title: "Preferences", systemImage: "gearshape")
+                        SectionHeader(title: "偏好设置", systemImage: "gearshape")
                         LiftCard {
-                            EmptyStateView(title: "Settings unavailable", message: "LiftLog will create default settings on next launch.")
+                            EmptyStateView(title: "设置不可用", message: "下次启动时将自动创建默认设置。")
                         }
                     }
 
-                    SectionHeader(title: "Library", systemImage: "book.pages")
+                    SectionHeader(title: "资料", systemImage: "book.pages")
                     LiftCard {
-                        NavigationLink {
-                            ExerciseLibraryView(exercises: exercises)
-                        } label: {
-                            HStack {
-                                Label("Exercise Library", systemImage: "dumbbell")
-                                Spacer()
-                                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        VStack(spacing: 12) {
+                            NavigationLink {
+                                ExerciseLibraryView(exercises: exercises)
+                            } label: {
+                                HStack {
+                                    Label("动作库", systemImage: "dumbbell")
+                                    Spacer()
+                                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                                }
                             }
+                            .buttonStyle(.plain)
+                            Divider()
+                            NavigationLink {
+                                BodyWeightHistoryView(unit: settings?.weightUnit ?? .kg)
+                            } label: {
+                                HStack {
+                                    Label("体重记录", systemImage: "figure.arms.open")
+                                    Spacer()
+                                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                                }
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
 
-                    SectionHeader(title: "Health & Watch", systemImage: "heart")
+                    SectionHeader(title: "健康与手表", systemImage: "heart")
                     LiftCard {
                         VStack(alignment: .leading, spacing: 12) {
-                            HStack { Text("HealthKit"); Spacer(); Text(healthStatus == "unknown" ? "Not Requested" : healthStatus.capitalized).foregroundStyle(.secondary) }
+                            HStack {
+                                Text("健康权限")
+                                Spacer()
+                                Text(healthStatusText(healthStatus)).foregroundStyle(.secondary)
+                            }
                             Divider()
                             HStack { Text("Apple Watch"); Spacer(); Text(watchStatus).foregroundStyle(.secondary) }
+                            if let lastSent = WatchConnectivityManager.shared.lastSyncSentAt {
+                                Divider()
+                                HStack { Text("上次发送"); Spacer(); Text(lastSent.formatted(.relative(presentation: .named))).foregroundStyle(.secondary).font(.caption) }
+                            }
+                            if let lastReceived = WatchConnectivityManager.shared.lastSyncReceivedAt {
+                                HStack { Text("上次接收"); Spacer(); Text(lastReceived.formatted(.relative(presentation: .named))).foregroundStyle(.secondary).font(.caption) }
+                            }
+                            HStack {
+                                Text("回执进度")
+                                Spacer()
+                                Text("\(WatchConnectivityManager.shared.lastAcknowledgedSequence)/\(WatchConnectivityManager.shared.lastSentSequence)")
+                                    .foregroundStyle(.secondary).font(.caption.monospacedDigit())
+                            }
                             Divider()
                             Button {
                                 Task {
@@ -1624,41 +2004,51 @@ struct SettingsView: View {
                                     healthStatus = HealthKitManager.shared.authorizationState.rawValue
                                 }
                             } label: {
-                                Label("Update Health Permissions", systemImage: "heart.fill")
+                                Label("更新健康权限", systemImage: "heart.fill")
                             }
                             Divider()
                             Button {
                                 Task { await importRecentHealthWorkouts() }
                             } label: {
-                                Label("Import Recent Health Workouts", systemImage: "heart.text.square")
+                                Label("导入近期健康训练", systemImage: "heart.text.square")
+                            }
+                            .disabled(settingsVM.isImportingHealth)
+                            if settingsVM.isImportingHealth {
+                                ProgressView().controlSize(.small)
+                            }
+                            Divider()
+                            Button {
+                                forceWatchSync()
+                            } label: {
+                                Label("立即同步到手表", systemImage: "arrow.clockwise")
                             }
                         }
                     }
 
-                    SectionHeader(title: "Data Export", systemImage: "square.and.arrow.up")
+                    SectionHeader(title: "数据导出", systemImage: "square.and.arrow.up")
                     LiftCard {
                         VStack(alignment: .leading, spacing: 12) {
                             Button {
                                 createExport(.workoutHistory)
                             } label: {
-                                Label("Export Workout CSV", systemImage: "tablecells")
+                                Label("导出训练 CSV", systemImage: "tablecells")
                             }
                             Divider()
                             Button {
                                 createExport(.exerciseLibrary)
                             } label: {
-                                Label("Export Exercise CSV", systemImage: "list.bullet.rectangle")
+                                Label("导出动作 CSV", systemImage: "list.bullet.rectangle")
                             }
                             Divider()
                             Button {
                                 createExport(.allData)
                             } label: {
-                                Label("Export All Data JSON", systemImage: "doc.text")
+                                Label("导出全部 JSON", systemImage: "doc.text")
                             }
                             if let exportURL {
                                 Divider()
                                 ShareLink(item: exportURL) {
-                                    Label("Share Latest Export", systemImage: "square.and.arrow.up")
+                                    Label("分享最新导出", systemImage: "square.and.arrow.up")
                                 }
                             }
                             if !exportPreview.isEmpty {
@@ -1670,36 +2060,36 @@ struct SettingsView: View {
                         }
                     }
 
-                    SectionHeader(title: "Data Management", systemImage: "externaldrive")
+                    SectionHeader(title: "数据管理", systemImage: "externaldrive")
                     LiftCard {
                         VStack(alignment: .leading, spacing: 12) {
                             Button(role: .destructive) {
                                 showingClearHistoryConfirmation = true
                             } label: {
-                                Label("Clear Workout History", systemImage: "trash").foregroundStyle(.red)
+                                Label("清空训练历史", systemImage: "trash").foregroundStyle(.red)
                             }
                             .disabled(sessions.isEmpty)
                             Divider()
                             Button {
                                 showingResetSamplesConfirmation = true
                             } label: {
-                                Label("Restore Sample Data", systemImage: "arrow.clockwise")
+                                Label("恢复示例数据", systemImage: "arrow.clockwise")
                             }
                             Divider()
-                            Text("Clearing history removes saved workouts, sets, and heart-rate samples. It keeps your exercise library, templates, and preferences.")
+                            Text("清空历史会移除已保存的训练、组与心率样本，但会保留动作库、模板及偏好设置。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
 
-                    SectionHeader(title: "About LiftLog", systemImage: "info.circle")
+                    SectionHeader(title: "关于", systemImage: "info.circle")
                     LiftCard {
                         VStack(alignment: .leading, spacing: 12) {
-                            HStack { Text("Version"); Spacer(); Text("1.0").foregroundStyle(.secondary) }
+                            HStack { Text("版本"); Spacer(); Text("1.0").foregroundStyle(.secondary) }
                             Divider()
-                            HStack { Text("Storage"); Spacer(); Text("Local SwiftData").foregroundStyle(.secondary) }
+                            HStack { Text("存储"); Spacer(); Text("本地 SwiftData").foregroundStyle(.secondary) }
                             Divider()
-                            HStack { Text("Sync"); Spacer(); Text("Local first").foregroundStyle(.secondary) }
+                            HStack { Text("同步策略"); Spacer(); Text("本地优先").foregroundStyle(.secondary) }
                             if !statusMessage.isEmpty {
                                 Divider()
                                 Text(statusMessage)
@@ -1714,34 +2104,34 @@ struct SettingsView: View {
                 .padding(.top, 4)
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Setting")
+            .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 #if os(iOS)
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Done") {
+                    Button("完成") {
                         Keyboard.dismiss()
                     }
                 }
                 #endif
             }
-            .confirmationDialog("Clear all workout history?", isPresented: $showingClearHistoryConfirmation, titleVisibility: .visible) {
-                Button("Clear History", role: .destructive) {
+            .confirmationDialog("清空全部训练历史？", isPresented: $showingClearHistoryConfirmation, titleVisibility: .visible) {
+                Button("清空历史", role: .destructive) {
                     clearWorkoutHistory()
                 }
-                Button("Cancel", role: .cancel) {}
+                Button("取消", role: .cancel) {}
             } message: {
-                Text("This cannot be undone. Exercise library, routines, and settings will remain.")
+                Text("此操作不可恢复。动作库、模板与偏好设置会保留。")
             }
-            .confirmationDialog("Restore sample data?", isPresented: $showingResetSamplesConfirmation, titleVisibility: .visible) {
-                Button("Restore Samples") {
+            .confirmationDialog("恢复示例数据？", isPresented: $showingResetSamplesConfirmation, titleVisibility: .visible) {
+                Button("恢复示例") {
                     SeedData.ensureSeeded(modelContext: modelContext)
-                    statusMessage = "Sample data checked and restored where needed."
+                    statusMessage = "已恢复缺失的示例数据。"
                 }
-                Button("Cancel", role: .cancel) {}
+                Button("取消", role: .cancel) {}
             } message: {
-                Text("Missing preset exercises, templates, settings, and sample history will be inserted.")
+                Text("将补齐缺失的预设动作、模板、设置以及示例历史。")
             }
             .onAppear {
                 healthStatus = HealthKitManager.shared.authorizationState.rawValue
@@ -1750,11 +2140,20 @@ struct SettingsView: View {
         }
     }
 
+    private func healthStatusText(_ raw: String) -> String {
+        switch raw {
+        case "authorized": return "已授权"
+        case "denied": return "已拒绝"
+        case "unavailable": return "不可用"
+        default: return "未请求"
+        }
+    }
+
     private func createExport(_ kind: ExportManager.ExportKind) {
         do {
             let url = try ExportManager.writeExportFile(kind: kind, sessions: sessions, exercises: exercises, routines: routines)
             exportURL = url
-            statusMessage = "Export ready: \(url.lastPathComponent)"
+            statusMessage = "已生成：\(url.lastPathComponent)"
             switch kind {
             case .workoutHistory:
                 exportPreview = ExportManager.workoutHistoryCSV(sessions: sessions)
@@ -1764,7 +2163,7 @@ struct SettingsView: View {
                 exportPreview = String(data: ExportManager.allDataJSON(sessions: sessions, exercises: exercises, routines: routines) ?? Data(), encoding: .utf8) ?? ""
             }
         } catch {
-            statusMessage = "Export failed: \(error.localizedDescription)"
+            statusMessage = "导出失败：\(error.localizedDescription)"
         }
     }
 
@@ -1773,9 +2172,9 @@ struct SettingsView: View {
             try workoutVM.deleteAllWorkoutHistory(modelContext: modelContext)
             exportPreview = ""
             exportURL = nil
-            statusMessage = "Workout history cleared."
+            statusMessage = "训练历史已清空。"
         } catch {
-            statusMessage = "Clear failed: \(error.localizedDescription)"
+            statusMessage = "清空失败：\(error.localizedDescription)"
         }
     }
 
@@ -1785,13 +2184,21 @@ struct SettingsView: View {
     }
 
     private func importRecentHealthWorkouts() async {
-        await HealthKitManager.shared.requestAuthorization()
+        await settingsVM.importRecentHealthWorkouts(into: sessions, workoutVM: workoutVM, modelContext: modelContext)
+        statusMessage = settingsVM.statusMessage
         healthStatus = HealthKitManager.shared.authorizationState.rawValue
-        let end = Date()
-        let start = Calendar.current.date(byAdding: .day, value: -90, to: end) ?? end
-        let workouts = await HealthKitManager.shared.fetchStrengthWorkouts(start: start, end: end)
-        let count = await workoutVM.importHealthWorkouts(workouts, existingSessions: sessions, modelContext: modelContext)
-        statusMessage = count == 0 ? "No new Health workouts found." : "Imported \(count) Health workout\(count == 1 ? "" : "s")."
+    }
+
+    private func forceWatchSync() {
+        if let session = sessions.first(where: { $0.status == .active || $0.status == .paused }) {
+            workoutVM.attachContext(sessions: sessions, routines: routines, settings: settings)
+            workoutVM.sync(session)
+        } else {
+            workoutVM.broadcastIdleSnapshot(routines: routines, hapticOnRestComplete: settings?.watchHapticOnRestComplete ?? true, weightUnit: settings?.weightUnit ?? .kg)
+        }
+        WatchConnectivityManager.shared.refreshStatus()
+        watchStatus = watchConnectivityStatus
+        statusMessage = "已发送同步请求。"
     }
 }
 
@@ -1800,13 +2207,13 @@ struct EditableSettingsSection: View {
     let healthStatus: String
 
     var body: some View {
-        SectionHeader(title: "Appearance", systemImage: "paintpalette")
+        SectionHeader(title: "外观", systemImage: "paintpalette")
         LiftCard {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Theme")
+                    Text("主题")
                     Spacer()
-                    Picker("Theme", selection: $settings.themeRaw) {
+                    Picker("主题", selection: $settings.themeRaw) {
                         ForEach(AppTheme.allCases) { theme in
                             Text(theme.displayName).tag(theme.rawValue)
                         }
@@ -1815,9 +2222,9 @@ struct EditableSettingsSection: View {
                 }
                 Divider()
                 HStack {
-                    Text("Accent")
+                    Text("主色调")
                     Spacer()
-                    Picker("Accent", selection: $settings.accentColorRaw) {
+                    Picker("主色调", selection: $settings.accentColorRaw) {
                         ForEach(AccentColorPreset.allCases) { preset in
                             Label(preset.displayName, systemImage: "circle.fill")
                                 .tag(preset.rawValue)
@@ -1849,13 +2256,13 @@ struct EditableSettingsSection: View {
             }
         }
 
-        SectionHeader(title: "Training", systemImage: "dumbbell")
+        SectionHeader(title: "训练", systemImage: "dumbbell")
         LiftCard {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Unit")
+                    Text("重量单位")
                     Spacer()
-                    Picker("Unit", selection: $settings.weightUnitRaw) {
+                    Picker("重量单位", selection: $settings.weightUnitRaw) {
                         ForEach(WeightUnit.allCases) { unit in
                             Text(unit.rawValue.uppercased()).tag(unit.rawValue)
                         }
@@ -1863,33 +2270,81 @@ struct EditableSettingsSection: View {
                     .pickerStyle(.menu)
                 }
                 Divider()
-                Stepper("Default rest: \(settings.defaultRestSeconds)s", value: $settings.defaultRestSeconds, in: 0...600, step: 15)
+                HStack {
+                    Text("1RM 估算公式")
+                    Spacer()
+                    Picker("1RM 估算公式", selection: $settings.oneRepMaxFormulaRaw) {
+                        ForEach(OneRepMaxFormula.allCases) { formula in
+                            Text(formula.displayName).tag(formula.rawValue)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
                 Divider()
-                Toggle("Auto start rest timer", isOn: $settings.autoStartRestTimer)
+                Stepper("默认休息：\(settings.defaultRestSeconds) 秒", value: $settings.defaultRestSeconds, in: 0...600, step: 15)
                 Divider()
-                Toggle("Use RPE", isOn: $settings.usesRPE)
+                Toggle("自动开始休息计时", isOn: $settings.autoStartRestTimer)
                 Divider()
-                Toggle("Show warm-up sets", isOn: $settings.showsWarmupSets)
+                Toggle("启用 RPE", isOn: $settings.usesRPE)
                 Divider()
-                Toggle("Use bodyweight in bodyweight volume", isOn: $settings.usesBodyweightForBodyweightVolume)
+                Toggle("显示热身组", isOn: $settings.showsWarmupSets)
+                Divider()
+                Toggle("自重训练计入容量", isOn: $settings.usesBodyweightForBodyweightVolume)
+                Divider()
+                Toggle("打破记录时庆祝", isOn: $settings.celebratesPersonalRecords)
+                Divider()
+                Toggle("肌群平衡提醒", isOn: $settings.enableMuscleBalanceAlerts)
             }
         }
 
-        SectionHeader(title: "Body & Heart Rate", systemImage: "figure.walk")
+        SectionHeader(title: "每周目标", systemImage: "target")
         LiftCard {
             VStack(alignment: .leading, spacing: 12) {
-                Stepper("Age: \(settings.age)", value: $settings.age, in: 12...100)
+                Stepper("训练次数：\(settings.weeklyFrequencyGoal) 次", value: $settings.weeklyFrequencyGoal, in: 1...14)
                 Divider()
                 HStack {
-                    Text("Bodyweight kg")
+                    Text("容量目标")
                     Spacer()
-                    TextField("Bodyweight kg", value: $settings.bodyweightKg, format: .number)
+                    TextField("容量", value: $settings.weeklyVolumeGoal, format: .number)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 100)
+                    Text(settings.weightUnit.rawValue.uppercased())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+
+        SectionHeader(title: "语言", systemImage: "globe")
+        LiftCard {
+            HStack {
+                Text("App 语言")
+                Spacer()
+                Picker("App 语言", selection: $settings.localePreferenceRaw) {
+                    ForEach(AppLocalePreference.allCases) { pref in
+                        Text(pref.displayName).tag(pref.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+        }
+
+        SectionHeader(title: "身体与心率", systemImage: "figure.walk")
+        LiftCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Stepper("年龄：\(settings.age) 岁", value: $settings.age, in: 12...100)
+                Divider()
+                HStack {
+                    Text("体重（kg）")
+                    Spacer()
+                    TextField("体重 kg", value: $settings.bodyweightKg, format: .number)
                         .keyboardType(.decimalPad)
                         .multilineTextAlignment(.trailing)
                         .frame(width: 80)
                 }
                 Divider()
-                Toggle("Custom max heart rate", isOn: Binding(
+                Toggle("自定义最大心率", isOn: Binding(
                     get: { settings.customMaxHeartRate != nil },
                     set: { enabled in
                         settings.customMaxHeartRate = enabled ? settings.maxHeartRate : nil
@@ -1897,22 +2352,22 @@ struct EditableSettingsSection: View {
                 ))
                 Divider()
                 if settings.customMaxHeartRate != nil {
-                    Stepper("Max HR: \(settings.customMaxHeartRate ?? settings.maxHeartRate)", value: Binding(
+                    Stepper("最大心率：\(settings.customMaxHeartRate ?? settings.maxHeartRate)", value: Binding(
                         get: { settings.customMaxHeartRate ?? settings.maxHeartRate },
                         set: { settings.customMaxHeartRate = min(230, max(120, $0)) }
                     ), in: 120...230)
                 } else {
-                    HStack { Text("Estimated Max HR"); Spacer(); Text("\(settings.maxHeartRate) bpm").foregroundStyle(.secondary) }
+                    HStack { Text("估算最大心率"); Spacer(); Text("\(settings.maxHeartRate) 次/分").foregroundStyle(.secondary) }
                 }
             }
         }
 
-        SectionHeader(title: "Apple Health", systemImage: "cross.case")
+        SectionHeader(title: "Apple 健康", systemImage: "cross.case")
         LiftCard {
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("Write workouts to Apple Health", isOn: $settings.writesWorkoutsToHealth)
+                Toggle("将训练写入 Apple 健康", isOn: $settings.writesWorkoutsToHealth)
                 Divider()
-                Text(healthStatus == "authorized" ? "Health permissions are active." : "Health data requires permission before heart rate, energy, and workout writes are available.")
+                Text(healthStatus == "authorized" ? "健康权限已开启。" : "需先授权后才能读取心率、能量并写入训练。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1931,9 +2386,9 @@ struct MoreStatusHeader: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("LiftLog")
+                    Text("训练")
                         .font(.title2.bold())
-                    Text("Local-first strength training log")
+                    Text("本地优先的力量训练记录")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -1943,14 +2398,14 @@ struct MoreStatusHeader: View {
                     .foregroundStyle(.tint)
             }
             HStack(spacing: 10) {
-                StatTile(title: "History", value: "\(workouts)", subtitle: "workouts", systemImage: "clock.arrow.circlepath")
-                StatTile(title: "Library", value: "\(exercises)", subtitle: "exercises", systemImage: "dumbbell")
-                StatTile(title: "Volume", value: "\(Int(volume))", subtitle: unit, systemImage: "scalemass")
+                StatTile(title: "历史", value: "\(workouts)", subtitle: "次", systemImage: "clock.arrow.circlepath")
+                StatTile(title: "动作", value: "\(exercises)", subtitle: "个", systemImage: "dumbbell")
+                StatTile(title: "总容量", value: "\(Int(volume))", subtitle: unit, systemImage: "scalemass")
             }
             HStack {
-                Label("\(routines) templates", systemImage: "square.stack.3d.up")
+                Label("\(routines) 个模板", systemImage: "square.stack.3d.up")
                 Spacer()
-                Label("No login required", systemImage: "lock")
+                Label("无需登录", systemImage: "lock")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -1962,16 +2417,53 @@ struct MoreStatusHeader: View {
 struct RestTimerView: View {
     @Bindable var restTimer: RestTimerManager
 
+    private var displayText: String {
+        let total = max(0, restTimer.remainingSeconds)
+        let minutes = total / 60
+        let seconds = total % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Rest \(restTimer.remainingSeconds)s")
-                .font(.title3.bold())
-            HStack {
-                Button("-30") { restTimer.adjust(by: -30) }
-                Button("Skip") { restTimer.skip() }
-                Button("+30") { restTimer.adjust(by: 30) }
+        HStack(spacing: DesignTokens.Spacing.md) {
+            ZStack {
+                Circle()
+                    .stroke(Color.accentColor.opacity(0.15), lineWidth: 6)
+                Circle()
+                    .trim(from: 0, to: CGFloat(restTimer.progress))
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.linear(duration: 0.5), value: restTimer.progress)
+                Image(systemName: "timer")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.tint)
             }
-            .buttonStyle(.bordered)
+            .frame(width: 48, height: 48)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("休息")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(displayText)
+                    .font(.title2.monospacedDigit().bold())
+            }
+            Spacer()
+            HStack(spacing: 6) {
+                Button("-30") { DesignTokens.Haptic.tap(); restTimer.adjust(by: -30) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("+30") { DesignTokens.Haptic.tap(); restTimer.adjust(by: 30) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button {
+                    DesignTokens.Haptic.tap()
+                    restTimer.skip()
+                } label: {
+                    Image(systemName: "forward.end.fill")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel("跳过休息")
+            }
         }
         .padding(.vertical, 4)
     }
@@ -1997,8 +2489,8 @@ struct WorkoutSummaryCard: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             HStack {
-                Text("Avg HR \(session.averageHeartRate.map { String(Int($0)) } ?? "--")")
-                Text("Energy \(session.activeEnergyKcal.map { String(Int($0)) } ?? "--") kcal")
+                Text("平均心率 \(session.averageHeartRate.map { String(Int($0)) } ?? "--")")
+                Text("消耗 \(session.activeEnergyKcal.map { String(Int($0)) } ?? "--") 千卡")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -2120,7 +2612,7 @@ struct NextSetCard: View {
                 .frame(width: 34, height: 34)
                 .background(Color.accentColor.opacity(0.12), in: Circle())
             VStack(alignment: .leading, spacing: 3) {
-                Text("Next Set")
+                Text("下一组")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Text(target.exerciseName)
@@ -2129,10 +2621,10 @@ struct NextSetCard: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
-                Text("#\(target.setIndex) · \(target.setType.title)")
+                Text("第\(target.setIndex)组 · \(target.setType.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("\(target.weightText) x \(target.reps)")
+                Text("\(target.weightText) × \(target.reps)")
                     .font(.headline)
             }
         }
@@ -2169,48 +2661,6 @@ enum Keyboard {
         #if canImport(UIKit)
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         #endif
-    }
-}
-
-extension AppTheme {
-    var preferredColorScheme: ColorScheme? {
-        switch self {
-        case .light: .light
-        case .dark: .dark
-        case .system: nil
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .light: "Day"
-        case .dark: "Night"
-        case .system: "System"
-        }
-    }
-}
-
-extension AccentColorPreset {
-    var swiftUIColor: Color {
-        switch self {
-        case .pink: .pink
-        case .blue: .blue
-        case .green: .green
-        case .orange: .orange
-        case .purple: .purple
-        case .red: .red
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .pink: "Pink"
-        case .blue: "Blue"
-        case .green: "Green"
-        case .orange: "Orange"
-        case .purple: "Purple"
-        case .red: "Red"
-        }
     }
 }
 

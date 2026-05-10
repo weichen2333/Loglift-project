@@ -11,6 +11,19 @@ enum MuscleGroup: String, Codable, CaseIterable, Identifiable {
     case fullBody = "Full Body"
 
     var id: String { rawValue }
+
+    /// 用于界面展示的本地化名称（rawValue 保持英文以避免破坏已存数据）。
+    var displayName: String {
+        switch self {
+        case .chest: "胸"
+        case .back: "背"
+        case .legs: "腿"
+        case .shoulders: "肩"
+        case .arms: "手臂"
+        case .core: "核心"
+        case .fullBody: "全身"
+        }
+    }
 }
 
 enum ExerciseType: String, Codable, CaseIterable, Identifiable {
@@ -29,16 +42,16 @@ enum ExerciseType: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .barbell: "Barbell"
-        case .dumbbell: "Dumbbell"
-        case .machine: "Machine"
-        case .cable: "Cable"
-        case .bodyweight: "Bodyweight"
-        case .kettlebell: "Kettlebell"
-        case .plateLoaded: "Plate Loaded"
-        case .unilateral: "Unilateral"
-        case .cardio: "Cardio"
-        case .other: "Other"
+        case .barbell: "杠铃"
+        case .dumbbell: "哑铃"
+        case .machine: "固定器械"
+        case .cable: "拉索"
+        case .bodyweight: "自重"
+        case .kettlebell: "壶铃"
+        case .plateLoaded: "片式器械"
+        case .unilateral: "单侧训练"
+        case .cardio: "有氧"
+        case .other: "其他"
         }
     }
 }
@@ -58,15 +71,15 @@ enum WeightMode: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .sameWeight: "Total"
-        case .leftRightSeparate: "Left/Right"
-        case .bodyweight: "Bodyweight"
-        case .assistedBodyweight: "Assisted"
-        case .machineStack: "Stack"
-        case .plateLoaded: "Plate"
-        case .cable: "Cable"
-        case .timeBased: "Time"
-        case .distanceBased: "Distance"
+        case .sameWeight: "总重"
+        case .leftRightSeparate: "双侧"
+        case .bodyweight: "自重"
+        case .assistedBodyweight: "助力"
+        case .machineStack: "配重片"
+        case .plateLoaded: "片式"
+        case .cable: "拉索"
+        case .timeBased: "计时"
+        case .distanceBased: "距离"
         }
     }
 }
@@ -83,12 +96,12 @@ enum SetType: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .warmup: "Warm-up"
-        case .normal: "Normal"
-        case .drop: "Drop"
-        case .failure: "Failure"
-        case .restPause: "Rest Pause"
-        case .superset: "Superset"
+        case .warmup: "热身"
+        case .normal: "正式"
+        case .drop: "递减"
+        case .failure: "力竭"
+        case .restPause: "休息暂停"
+        case .superset: "超级组"
         }
     }
 }
@@ -131,6 +144,30 @@ enum AccentColorPreset: String, Codable, CaseIterable, Identifiable {
     case red
 
     var id: String { rawValue }
+}
+
+enum AppLocalePreference: String, Codable, CaseIterable, Identifiable {
+    case system
+    case english
+    case chinese
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .system: "跟随系统"
+        case .english: "English"
+        case .chinese: "中文"
+        }
+    }
+
+    var localeIdentifier: String? {
+        switch self {
+        case .system: nil
+        case .english: "en"
+        case .chinese: "zh-Hans"
+        }
+    }
 }
 
 @Model
@@ -495,6 +532,14 @@ final class UserSettings {
     var age: Int
     var customMaxHeartRate: Int?
     var bodyweightKg: Double
+    var weeklyFrequencyGoal: Int = 3
+    var weeklyVolumeGoal: Double = 10000
+    var oneRepMaxFormulaRaw: String = OneRepMaxFormula.epley.rawValue
+    var localePreferenceRaw: String = AppLocalePreference.system.rawValue
+    var celebratesPersonalRecords: Bool = true
+    var prefersLargeNumberInput: Bool = true
+    var watchHapticOnRestComplete: Bool = true
+    var enableMuscleBalanceAlerts: Bool = true
 
     var weightUnit: WeightUnit {
         get { WeightUnit(rawValue: weightUnitRaw) ?? .kg }
@@ -509,6 +554,16 @@ final class UserSettings {
     var accentColor: AccentColorPreset {
         get { AccentColorPreset(rawValue: accentColorRaw) ?? .pink }
         set { accentColorRaw = newValue.rawValue }
+    }
+
+    var oneRepMaxFormula: OneRepMaxFormula {
+        get { OneRepMaxFormula(rawValue: oneRepMaxFormulaRaw) ?? .epley }
+        set { oneRepMaxFormulaRaw = newValue.rawValue }
+    }
+
+    var localePreference: AppLocalePreference {
+        get { AppLocalePreference(rawValue: localePreferenceRaw) ?? .system }
+        set { localePreferenceRaw = newValue.rawValue }
     }
 
     var maxHeartRate: Int {
@@ -528,7 +583,15 @@ final class UserSettings {
         accentColor: AccentColorPreset = .pink,
         age: Int = 30,
         customMaxHeartRate: Int? = nil,
-        bodyweightKg: Double = 75
+        bodyweightKg: Double = 75,
+        weeklyFrequencyGoal: Int = 3,
+        weeklyVolumeGoal: Double = 10000,
+        oneRepMaxFormula: OneRepMaxFormula = .epley,
+        localePreference: AppLocalePreference = .system,
+        celebratesPersonalRecords: Bool = true,
+        prefersLargeNumberInput: Bool = true,
+        watchHapticOnRestComplete: Bool = true,
+        enableMuscleBalanceAlerts: Bool = true
     ) {
         self.id = id
         self.weightUnitRaw = weightUnit.rawValue
@@ -543,6 +606,14 @@ final class UserSettings {
         self.age = min(100, max(12, age))
         self.customMaxHeartRate = customMaxHeartRate
         self.bodyweightKg = max(0, bodyweightKg)
+        self.weeklyFrequencyGoal = max(1, min(14, weeklyFrequencyGoal))
+        self.weeklyVolumeGoal = max(0, weeklyVolumeGoal)
+        self.oneRepMaxFormulaRaw = oneRepMaxFormula.rawValue
+        self.localePreferenceRaw = localePreference.rawValue
+        self.celebratesPersonalRecords = celebratesPersonalRecords
+        self.prefersLargeNumberInput = prefersLargeNumberInput
+        self.watchHapticOnRestComplete = watchHapticOnRestComplete
+        self.enableMuscleBalanceAlerts = enableMuscleBalanceAlerts
     }
 }
 
@@ -551,11 +622,13 @@ final class BodyMeasurement {
     @Attribute(.unique) var id: UUID
     var date: Date
     var bodyMassKg: Double
+    var note: String = ""
 
-    init(id: UUID = UUID(), date: Date = Date(), bodyMassKg: Double) {
+    init(id: UUID = UUID(), date: Date = Date(), bodyMassKg: Double, note: String = "") {
         self.id = id
         self.date = date
         self.bodyMassKg = max(0, bodyMassKg)
+        self.note = note
     }
 }
 

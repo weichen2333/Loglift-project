@@ -3,11 +3,36 @@ import Foundation
 import Combine
 import HealthKit
 import WatchConnectivity
+import WatchKit
+
+// MARK: - Shared sync types (mirrors iOS WorkoutSyncState)
 
 enum WatchWorkoutStatus: String, Codable {
+    case planned
     case active
     case paused
     case completed
+    case cancelled
+}
+
+struct WatchExerciseSnapshot: Codable, Hashable, Identifiable {
+    var id: UUID { workoutExerciseId }
+    var workoutExerciseId: UUID
+    var exerciseName: String
+    var totalSets: Int
+    var completedSets: Int
+    var currentSetIndex: Int?
+    var targetReps: Int?
+    var weightText: String?
+    var lastWeightText: String?
+    var lastReps: Int?
+}
+
+struct WatchRoutineSnapshot: Codable, Hashable, Identifiable {
+    var id: UUID
+    var name: String
+    var exerciseCount: Int
+    var estimatedSets: Int
 }
 
 struct WatchWorkoutSyncState: Codable {
@@ -15,14 +40,26 @@ struct WatchWorkoutSyncState: Codable {
     var name: String
     var status: WatchWorkoutStatus
     var elapsedSeconds: TimeInterval
+    var currentExerciseId: UUID?
     var currentExerciseName: String?
+    var currentSetId: UUID?
     var currentSetIndex: Int?
     var completedSets: Int
+    var totalSets: Int = 0
     var currentHeartRate: Double?
     var averageHeartRate: Double?
     var activeEnergyKcal: Double?
     var restRemainingSeconds: Int?
+    var restTotalSeconds: Int?
+    var sequence: Int = 0
+    var generatedAt: Date = Date()
+    var exercises: [WatchExerciseSnapshot] = []
+    var routines: [WatchRoutineSnapshot] = []
+    var hapticOnRestComplete: Bool = true
+    var weightUnit: String = "kg"
 }
+
+// MARK: - App entry point
 
 @main
 struct LiftLogWatchApp: App {
@@ -34,134 +71,251 @@ struct LiftLogWatchApp: App {
 }
 
 struct WatchRootView: View {
+    @StateObject private var session = WatchSessionManager.shared
     @State private var isActive = false
 
     var body: some View {
-        if isActive {
-            ActiveWatchWorkoutView(isActive: $isActive)
-        } else {
-            StartWorkoutView(isActive: $isActive)
+        Group {
+            if isActive || session.lastReceivedState?.status == .active || session.lastReceivedState?.status == .paused {
+                ActiveWatchWorkoutView(isActive: $isActive)
+            } else {
+                StartWorkoutView(isActive: $isActive)
+            }
+        }
+        .task {
+            await WatchHealthKitManager.shared.requestAuthorization()
+            WatchSessionManager.shared.requestStateFromCompanion()
         }
     }
 }
+
+// MARK: - Start
 
 struct StartWorkoutView: View {
     @Binding var isActive: Bool
-    private let routines = ["Quick Workout", "Push Day", "Pull Day", "Leg Day"]
+    @ObservedObject private var session = WatchSessionManager.shared
+
+    private var routines: [WatchRoutineSnapshot] {
+        session.lastReceivedState?.routines ?? []
+    }
 
     var body: some View {
         NavigationStack {
-            List(routines, id: \.self) { routine in
-                Button(routine) {
-                    Task {
-                        await WatchHealthKitManager.shared.requestAuthorization()
-                        await WatchHealthKitManager.shared.startWorkout()
-                        WatchSessionManager.shared.send(state: WatchWorkoutSyncState(
-                            workoutId: nil,
-                            name: routine,
-                            status: .active,
-                            elapsedSeconds: 0,
-                            currentExerciseName: nil,
-                            currentSetIndex: nil,
-                            completedSets: 0,
-                            currentHeartRate: nil,
-                            averageHeartRate: nil,
-                            activeEnergyKcal: nil,
-                            restRemainingSeconds: nil
-                        ))
-                        isActive = true
+            List {
+                Section {
+                    Button {
+                        Task { await startQuickWorkout() }
+                    } label: {
+                        Label("快速训练", systemImage: "bolt.fill")
+                    }
+                }
+                if !routines.isEmpty {
+                    Section("训练模板") {
+                        ForEach(routines) { routine in
+                            Button {
+                                Task { await startRoutine(routine) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(routine.name).font(.body)
+                                    Text("\(routine.exerciseCount) 个动作 · \(routine.estimatedSets) 组")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Section {
+                        Text("从 iPhone 同步后将显示模板。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
-            .navigationTitle("LiftLog")
+            .navigationTitle("训练")
         }
     }
+
+    private func startQuickWorkout() async {
+        await WatchHealthKitManager.shared.requestAuthorization()
+        await WatchHealthKitManager.shared.startWorkout()
+        WatchSessionManager.shared.sendCommand("startQuickWorkout")
+        WatchKit.WKInterfaceDevice.current().play(.start)
+        isActive = true
+    }
+
+    private func startRoutine(_ routine: WatchRoutineSnapshot) async {
+        await WatchHealthKitManager.shared.requestAuthorization()
+        await WatchHealthKitManager.shared.startWorkout()
+        WatchSessionManager.shared.sendCommand("startRoutineWorkout", payload: ["routineId": routine.id.uuidString])
+        WatchKit.WKInterfaceDevice.current().play(.start)
+        isActive = true
+    }
 }
+
+// MARK: - Active workout
 
 struct ActiveWatchWorkoutView: View {
     @Binding var isActive: Bool
+    @ObservedObject private var session = WatchSessionManager.shared
+    @ObservedObject private var health = WatchHealthKitManager.shared
     @State private var startedAt = Date()
     @State private var elapsed: TimeInterval = 0
+    @State private var lastRestSeconds: Int = 0
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    private var state: WatchWorkoutSyncState? { WatchSessionManager.shared.lastReceivedState }
+    private var state: WatchWorkoutSyncState? { session.lastReceivedState }
 
     var body: some View {
         TabView {
-            VStack(spacing: 8) {
-                Text(state?.name ?? "Workout")
-                    .font(.headline)
-                    .lineLimit(1)
-                Text(elapsed.shortDurationText)
-                    .font(.title2.bold())
-                HStack {
-                    MetricBadge(title: "HR", value: WatchHealthKitManager.shared.currentHeartRate.map { "\(Int($0))" } ?? "--")
-                    MetricBadge(title: "Avg", value: WatchHealthKitManager.shared.averageHeartRate.map { "\(Int($0))" } ?? "--")
-                }
-                HStack {
-                    MetricBadge(title: "Sets", value: "\(state?.completedSets ?? 0)")
-                    MetricBadge(title: "kcal", value: WatchHealthKitManager.shared.activeEnergyKcal.map { "\(Int($0))" } ?? "--")
-                }
-            }
-            SetControlView(state: state)
-            PauseEndView(isActive: $isActive)
+            metricsPage
+            currentSetPage
+            exerciseListPage
+            controlPage
         }
         .tabViewStyle(.verticalPage)
-        .onReceive(timer) { _ in elapsed = Date().timeIntervalSince(startedAt) }
+        .onReceive(timer) { _ in
+            if let state, state.status == .active {
+                elapsed = state.elapsedSeconds + Date().timeIntervalSince(state.generatedAt)
+            } else if let state {
+                elapsed = state.elapsedSeconds
+            }
+            handleRestCompletion()
+        }
     }
-}
 
-struct SetControlView: View {
-    let state: WatchWorkoutSyncState?
+    private var metricsPage: some View {
+        ScrollView {
+            VStack(spacing: 8) {
+                Text(state?.name ?? "训练").font(.headline).lineLimit(1)
+                Text(elapsed.shortDurationText).font(.title2.bold())
+                HStack {
+                    MetricBadge(title: "心率", value: health.currentHeartRate.map { "\(Int($0))" } ?? "--")
+                    MetricBadge(title: "平均", value: health.averageHeartRate.map { "\(Int($0))" } ?? "--")
+                }
+                HStack {
+                    MetricBadge(title: "组数", value: "\(state?.completedSets ?? 0)/\(state?.totalSets ?? 0)")
+                    MetricBadge(title: "千卡", value: health.activeEnergyKcal.map { "\(Int($0))" } ?? "--")
+                }
+                if let rest = state?.restRemainingSeconds, rest > 0 {
+                    RestRing(remaining: rest, total: state?.restTotalSeconds ?? rest)
+                        .frame(height: 56)
+                        .padding(.top, 8)
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+    }
 
-    var body: some View {
+    private var currentSetPage: some View {
         VStack(spacing: 10) {
-            Text(state?.currentExerciseName ?? "No exercise")
+            Text(state?.currentExerciseName ?? "暂无动作")
                 .font(.headline)
                 .multilineTextAlignment(.center)
-            Text("Set \(state?.currentSetIndex ?? 0)")
-                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            if let setIndex = state?.currentSetIndex {
+                Text("第 \(setIndex) 组")
+                    .foregroundStyle(.secondary)
+                if let reps = state?.exercises.first(where: { $0.workoutExerciseId == state?.currentExerciseId })?.targetReps {
+                    Text("目标 \(reps) 次")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tint)
+                }
+            }
+            if let snapshot = state?.exercises.first(where: { $0.workoutExerciseId == state?.currentExerciseId }),
+               let last = snapshot.lastWeightText {
+                Text("上次：\(last)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Button {
-                WatchSessionManager.shared.sendCompleteCurrentSet(workoutId: state?.workoutId)
+                WatchKit.WKInterfaceDevice.current().play(.success)
+                WatchSessionManager.shared.sendCompleteCurrentSet(workoutId: state?.workoutId, setId: state?.currentSetId)
             } label: {
-                Label("Done", systemImage: "checkmark.circle.fill")
+                Label("完成本组", systemImage: "checkmark.circle.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
+            .disabled(state?.currentSetId == nil)
             if let rest = state?.restRemainingSeconds, rest > 0 {
-                Text("Rest \(rest)s")
-                    .font(.caption)
+                Text("休息 \(rest) 秒")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tint)
             }
         }
         .padding()
     }
-}
 
-struct PauseEndView: View {
-    @Binding var isActive: Bool
-    @State private var paused = false
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Button(paused ? "Resume" : "Pause") {
-                paused.toggle()
-                if paused {
-                    WatchHealthKitManager.shared.pauseWorkout()
-                    WatchSessionManager.shared.sendCommand("pauseWorkout")
-                } else {
-                    WatchHealthKitManager.shared.resumeWorkout()
-                    WatchSessionManager.shared.sendCommand("resumeWorkout")
+    private var exerciseListPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("动作列表")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(state?.exercises ?? []) { exercise in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(exercise.exerciseName)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                            Text("\(exercise.completedSets)/\(exercise.totalSets) 组")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            if let last = exercise.lastWeightText {
+                                Text("上次：\(last)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        Spacer()
+                        if exercise.workoutExerciseId == state?.currentExerciseId {
+                            Image(systemName: "arrow.right.circle.fill").foregroundStyle(.tint)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    Divider()
+                }
+                if state?.exercises.isEmpty ?? true {
+                    Text("动作将从 iPhone 同步。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
-            Button("End") {
+            .padding(.horizontal, 4)
+        }
+    }
+
+    private var controlPage: some View {
+        VStack(spacing: 10) {
+            Button(state?.status == .paused ? "继续" : "暂停") {
+                WatchKit.WKInterfaceDevice.current().play(.click)
+                if state?.status == .paused {
+                    WatchHealthKitManager.shared.resumeWorkout()
+                    WatchSessionManager.shared.sendCommand("resumeWorkout")
+                } else {
+                    WatchHealthKitManager.shared.pauseWorkout()
+                    WatchSessionManager.shared.sendCommand("pauseWorkout")
+                }
+            }
+            Button("结束", role: .destructive) {
                 Task {
                     let uuid = await WatchHealthKitManager.shared.endWorkout()
                     WatchSessionManager.shared.sendEndedWorkout(uuid: uuid)
+                    WatchKit.WKInterfaceDevice.current().play(.stop)
                     isActive = false
                 }
             }
             .tint(.red)
         }
+        .padding()
+    }
+
+    private func handleRestCompletion() {
+        guard let rest = state?.restRemainingSeconds else { return }
+        if lastRestSeconds > 0 && rest == 0, state?.hapticOnRestComplete ?? true {
+            WatchKit.WKInterfaceDevice.current().play(.notification)
+        }
+        lastRestSeconds = rest
     }
 }
 
@@ -175,8 +329,36 @@ struct MetricBadge: View {
             Text(title).font(.caption2).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title) \(value)")
     }
 }
+
+struct RestRing: View {
+    let remaining: Int
+    let total: Int
+
+    private var progress: Double {
+        guard total > 0 else { return 0 }
+        return min(1, max(0, 1 - Double(remaining) / Double(total)))
+    }
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.accentColor.opacity(0.2), lineWidth: 5)
+            Circle()
+                .trim(from: 0, to: CGFloat(progress))
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 0) {
+                Text("\(remaining)").font(.headline.monospacedDigit())
+                Text("休息").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - HealthKit (watch)
 
 @MainActor
 final class WatchHealthKitManager: NSObject, ObservableObject {
@@ -189,8 +371,6 @@ final class WatchHealthKitManager: NSObject, ObservableObject {
     private let healthStore = HKHealthStore()
     private var session: HKWorkoutSession?
     private var builder: HKLiveWorkoutBuilder?
-    private var heartRateTotal: Double = 0
-    private var heartRateCount: Int = 0
 
     func requestAuthorization() async {
         guard HKHealthStore.isHealthDataAvailable() else { return }
@@ -219,8 +399,6 @@ final class WatchHealthKitManager: NSObject, ObservableObject {
             builder.delegate = self
             self.session = session
             self.builder = builder
-            heartRateTotal = 0
-            heartRateCount = 0
             currentHeartRate = nil
             averageHeartRate = nil
             activeEnergyKcal = nil
@@ -276,9 +454,10 @@ extension WatchHealthKitManager: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderD
                     let unit = HKUnit.count().unitDivided(by: .minute())
                     if let bpm = statistics?.mostRecentQuantity()?.doubleValue(for: unit) {
                         currentHeartRate = bpm
-                        heartRateTotal += bpm
-                        heartRateCount += 1
-                        averageHeartRate = heartRateTotal / Double(max(1, heartRateCount))
+                    }
+                    // Time-weighted average from HK rather than manual sample averaging.
+                    if let avg = statistics?.averageQuantity()?.doubleValue(for: HKUnit.count().unitDivided(by: .minute())) {
+                        averageHeartRate = avg
                     }
                 } else if quantityType == HKQuantityType(.activeEnergyBurned) {
                     activeEnergyKcal = statistics?.sumQuantity()?.doubleValue(for: .kilocalorie())
@@ -288,12 +467,17 @@ extension WatchHealthKitManager: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderD
     }
 }
 
+// MARK: - WatchConnectivity
+
 @MainActor
 final class WatchSessionManager: NSObject, ObservableObject {
     static let shared = WatchSessionManager()
 
     @Published private(set) var lastReceivedState: WatchWorkoutSyncState?
     @Published private(set) var isCompanionAppInstalled = false
+    @Published private(set) var isReachable = false
+    @Published private(set) var lastSyncReceivedAt: Date?
+    private var processedCommandIds: Set<UUID> = []
 
     override init() {
         super.init()
@@ -308,19 +492,38 @@ final class WatchSessionManager: NSObject, ObservableObject {
         sendPayload(["workoutState": data])
     }
 
-    func sendCompleteCurrentSet(workoutId: UUID?) {
+    func sendCompleteCurrentSet(workoutId: UUID?, setId: UUID?) {
         guard canSendToCompanion else { return }
-        sendPayload(["command": "completeCurrentSet", "workoutId": workoutId?.uuidString ?? ""])
+        sendPayload([
+            "command": "completeCurrentSet",
+            "commandId": UUID().uuidString,
+            "workoutId": workoutId?.uuidString ?? "",
+            "setId": setId?.uuidString ?? ""
+        ])
     }
 
     func sendEndedWorkout(uuid: UUID?) {
         guard canSendToCompanion else { return }
-        sendPayload(["command": "endedWorkout", "healthKitUUID": uuid?.uuidString ?? ""])
+        sendPayload([
+            "command": "endedWorkout",
+            "commandId": UUID().uuidString,
+            "healthKitUUID": uuid?.uuidString ?? ""
+        ])
     }
 
-    func sendCommand(_ command: String) {
+    func sendCommand(_ command: String, payload: [String: Any] = [:]) {
         guard canSendToCompanion else { return }
-        sendPayload(["command": command])
+        var merged: [String: Any] = ["command": command, "commandId": UUID().uuidString]
+        for (k, v) in payload { merged[k] = v }
+        sendPayload(merged)
+    }
+
+    func requestStateFromCompanion() {
+        sendCommand("requestState")
+    }
+
+    private func sendAcknowledgement(sequence: Int) {
+        sendPayload(["command": "acknowledge", "ackSequence": sequence])
     }
 
     private var canSendToCompanion: Bool {
@@ -332,13 +535,16 @@ final class WatchSessionManager: NSObject, ObservableObject {
     private func refreshAvailability() {
         guard WCSession.isSupported() else {
             isCompanionAppInstalled = false
+            isReachable = false
             return
         }
         guard WCSession.default.activationState == .activated else {
             isCompanionAppInstalled = false
+            isReachable = false
             return
         }
         isCompanionAppInstalled = WCSession.default.isCompanionAppInstalled
+        isReachable = WCSession.default.isReachable
     }
 
     private func sendPayload(_ payload: [String: Any]) {
@@ -361,12 +567,18 @@ extension WatchSessionManager: WCSessionDelegate {
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         Task { @MainActor in
             refreshAvailability()
+            if activationState == .activated {
+                requestStateFromCompanion()
+            }
         }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         Task { @MainActor in
             refreshAvailability()
+            if WCSession.default.isReachable {
+                requestStateFromCompanion()
+            }
         }
     }
 
@@ -379,10 +591,27 @@ extension WatchSessionManager: WCSessionDelegate {
     }
 
     private nonisolated func handle(_ message: [String: Any]) {
-        guard let data = message["workoutState"] as? Data else { return }
-        Task { @MainActor in
-            guard let state = try? JSONDecoder().decode(WatchWorkoutSyncState.self, from: data) else { return }
-            lastReceivedState = state
+        if let data = message["workoutState"] as? Data {
+            Task { @MainActor in
+                guard let state = try? JSONDecoder().decode(WatchWorkoutSyncState.self, from: data) else { return }
+                lastReceivedState = state
+                lastSyncReceivedAt = Date()
+                if state.sequence > 0 {
+                    sendAcknowledgement(sequence: state.sequence)
+                }
+            }
+            return
+        }
+        // Drop stray commands targeted at iPhone (we only care about state on watch side).
+        if let commandIdString = message["commandId"] as? String,
+           let commandId = UUID(uuidString: commandIdString) {
+            Task { @MainActor in
+                if processedCommandIds.contains(commandId) { return }
+                processedCommandIds.insert(commandId)
+                if processedCommandIds.count > 200 {
+                    processedCommandIds = Set(processedCommandIds.suffix(100))
+                }
+            }
         }
     }
 }
