@@ -9,18 +9,48 @@ import HealthKit
 import WatchConnectivity
 #endif
 
+struct WatchExerciseSnapshot: Codable, Hashable, Identifiable {
+    var id: UUID { workoutExerciseId }
+    var workoutExerciseId: UUID
+    var exerciseName: String
+    var totalSets: Int
+    var completedSets: Int
+    var currentSetIndex: Int?
+    var targetReps: Int?
+    var weightText: String?
+    var lastWeightText: String?
+    var lastReps: Int?
+}
+
+struct WatchRoutineSnapshot: Codable, Hashable, Identifiable {
+    var id: UUID
+    var name: String
+    var exerciseCount: Int
+    var estimatedSets: Int
+}
+
 struct WorkoutSyncState: Codable {
     var workoutId: UUID?
     var name: String
     var status: WorkoutStatus
     var elapsedSeconds: TimeInterval
+    var currentExerciseId: UUID?
     var currentExerciseName: String?
+    var currentSetId: UUID?
     var currentSetIndex: Int?
     var completedSets: Int
+    var totalSets: Int = 0
     var currentHeartRate: Double?
     var averageHeartRate: Double?
     var activeEnergyKcal: Double?
     var restRemainingSeconds: Int?
+    var restTotalSeconds: Int?
+    var sequence: Int = 0
+    var generatedAt: Date = Date()
+    var exercises: [WatchExerciseSnapshot] = []
+    var routines: [WatchRoutineSnapshot] = []
+    var hapticOnRestComplete: Bool = true
+    var weightUnit: String = "kg"
 }
 
 enum WatchCommand: String {
@@ -28,6 +58,11 @@ enum WatchCommand: String {
     case endedWorkout
     case pauseWorkout
     case resumeWorkout
+    case requestState
+    case startQuickWorkout
+    case startRoutineWorkout
+    case acknowledge
+    case restCompleted
 }
 
 enum HealthKitAuthorizationState: String {
@@ -194,7 +229,7 @@ final class HealthKitManager: NSObject {
             workoutEvents: nil,
             totalEnergyBurned: energy,
             totalDistance: nil,
-            metadata: [HKMetadataKeyWorkoutBrandName: "LiftLog"]
+            metadata: [HKMetadataKeyWorkoutBrandName: "训练"]
         )
         do {
             try await healthStore.save(workout)
@@ -304,6 +339,22 @@ extension HealthKitManager: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelega
 }
 #endif
 
+struct PendingWatchCommand: Hashable {
+    enum Kind: Hashable {
+        case completeSet(setId: UUID?, workoutId: UUID?)
+        case ended(healthKitUUID: UUID?)
+        case pause
+        case resume
+        case requestState
+        case startQuick
+        case startRoutine(routineId: UUID?)
+        case restCompleted
+    }
+    let id: UUID
+    let kind: Kind
+    let receivedAt: Date
+}
+
 @MainActor
 final class WatchConnectivityManager: NSObject {
     static let shared = WatchConnectivityManager()
@@ -313,12 +364,13 @@ final class WatchConnectivityManager: NSObject {
     private(set) var isCounterpartAppInstalled: Bool = false
     private(set) var activationStateDescription: String = "Inactive"
     private(set) var lastReceivedState: WorkoutSyncState?
-    private var pendingCompleteCurrentSetRequested = false
-    private var pendingCompleteCurrentSetWorkoutId: UUID?
-    private var pendingEndedWorkoutRequested = false
-    private var pendingEndedHealthKitUUID: UUID?
-    private var pendingPauseWorkoutRequested = false
-    private var pendingResumeWorkoutRequested = false
+    private(set) var lastSentSequence: Int = 0
+    private(set) var lastAcknowledgedSequence: Int = 0
+    private(set) var lastSyncSentAt: Date?
+    private(set) var lastSyncReceivedAt: Date?
+    private var pendingQueue: [PendingWatchCommand] = []
+    private var processedCommandIds: Set<UUID> = []
+    private var lastSentStateHash: Int = 0
 
     override init() {
         super.init()
@@ -343,61 +395,128 @@ final class WatchConnectivityManager: NSObject {
         #endif
     }
 
-    func send(state: WorkoutSyncState) {
+    func send(state: WorkoutSyncState, force: Bool = false) {
         #if canImport(WatchConnectivity)
         guard canSendToCounterpart else { return }
+        var stamped = state
+        lastSentSequence += 1
+        stamped.sequence = lastSentSequence
+        stamped.generatedAt = Date()
+        let hash = stamped.compactHash
+        guard force || hash != lastSentStateHash else { return }
+        lastSentStateHash = hash
         do {
-            let data = try JSONEncoder().encode(state)
+            let data = try JSONEncoder().encode(stamped)
             sendPayload(["workoutState": data])
+            lastSyncSentAt = Date()
         } catch {}
         #endif
     }
 
-    func sendCompleteCurrentSet(workoutId: UUID?) {
+    func sendCompleteCurrentSet(workoutId: UUID?, setId: UUID?) {
         #if canImport(WatchConnectivity)
         guard canSendToCounterpart else { return }
-        sendPayload(["command": "completeCurrentSet", "workoutId": workoutId?.uuidString ?? ""])
+        let commandId = UUID()
+        sendPayload([
+            "command": WatchCommand.completeCurrentSet.rawValue,
+            "commandId": commandId.uuidString,
+            "workoutId": workoutId?.uuidString ?? "",
+            "setId": setId?.uuidString ?? ""
+        ])
         #endif
     }
 
     func sendEndedWorkout(uuid: UUID?) {
         #if canImport(WatchConnectivity)
         guard canSendToCounterpart else { return }
-        sendPayload(["command": "endedWorkout", "healthKitUUID": uuid?.uuidString ?? ""])
+        let commandId = UUID()
+        sendPayload([
+            "command": WatchCommand.endedWorkout.rawValue,
+            "commandId": commandId.uuidString,
+            "healthKitUUID": uuid?.uuidString ?? ""
+        ])
         #endif
     }
 
-    func sendCommand(_ command: WatchCommand) {
+    func sendCommand(_ command: WatchCommand, payload: [String: Any] = [:]) {
         #if canImport(WatchConnectivity)
         guard canSendToCounterpart else { return }
-        sendPayload(["command": command.rawValue])
+        var merged: [String: Any] = ["command": command.rawValue, "commandId": UUID().uuidString]
+        for (k, v) in payload { merged[k] = v }
+        sendPayload(merged)
         #endif
     }
 
-    func consumeCompleteCurrentSetCommand(for workoutId: UUID) -> Bool {
-        guard pendingCompleteCurrentSetRequested else { return false }
-        guard pendingCompleteCurrentSetWorkoutId == nil || pendingCompleteCurrentSetWorkoutId == workoutId else { return false }
-        pendingCompleteCurrentSetRequested = false
-        pendingCompleteCurrentSetWorkoutId = nil
-        return true
+    func sendAcknowledgement(sequence: Int) {
+        #if canImport(WatchConnectivity)
+        guard canSendToCounterpart else { return }
+        sendPayload([
+            "command": WatchCommand.acknowledge.rawValue,
+            "ackSequence": sequence
+        ])
+        #endif
+    }
+
+    func consumeNextCommand() -> PendingWatchCommand? {
+        guard !pendingQueue.isEmpty else { return nil }
+        return pendingQueue.removeFirst()
+    }
+
+    func consumeCompleteCurrentSetCommand(for workoutId: UUID) -> (consumed: Bool, setId: UUID?) {
+        guard let index = pendingQueue.firstIndex(where: { command in
+            if case .completeSet(_, let cmdWorkoutId) = command.kind {
+                return cmdWorkoutId == nil || cmdWorkoutId == workoutId
+            }
+            return false
+        }) else { return (false, nil) }
+        let removed = pendingQueue.remove(at: index)
+        if case .completeSet(let setId, _) = removed.kind {
+            return (true, setId)
+        }
+        return (true, nil)
     }
 
     func consumeEndedWorkoutCommand() -> (requested: Bool, healthKitUUID: UUID?) {
-        guard pendingEndedWorkoutRequested else { return (false, nil) }
-        pendingEndedWorkoutRequested = false
-        defer { pendingEndedHealthKitUUID = nil }
-        return (true, pendingEndedHealthKitUUID)
+        guard let index = pendingQueue.firstIndex(where: { if case .ended = $0.kind { return true } else { return false } }) else { return (false, nil) }
+        let removed = pendingQueue.remove(at: index)
+        if case .ended(let id) = removed.kind { return (true, id) }
+        return (true, nil)
     }
 
     func consumePauseWorkoutCommand() -> Bool {
-        guard pendingPauseWorkoutRequested else { return false }
-        pendingPauseWorkoutRequested = false
+        guard let index = pendingQueue.firstIndex(where: { $0.kind == .pause }) else { return false }
+        pendingQueue.remove(at: index)
         return true
     }
 
     func consumeResumeWorkoutCommand() -> Bool {
-        guard pendingResumeWorkoutRequested else { return false }
-        pendingResumeWorkoutRequested = false
+        guard let index = pendingQueue.firstIndex(where: { $0.kind == .resume }) else { return false }
+        pendingQueue.remove(at: index)
+        return true
+    }
+
+    func consumeRequestStateCommand() -> Bool {
+        guard let index = pendingQueue.firstIndex(where: { $0.kind == .requestState }) else { return false }
+        pendingQueue.remove(at: index)
+        return true
+    }
+
+    func consumeStartQuickWorkoutCommand() -> Bool {
+        guard let index = pendingQueue.firstIndex(where: { $0.kind == .startQuick }) else { return false }
+        pendingQueue.remove(at: index)
+        return true
+    }
+
+    func consumeStartRoutineWorkoutCommand() -> UUID? {
+        guard let index = pendingQueue.firstIndex(where: { if case .startRoutine = $0.kind { return true } else { return false } }) else { return nil }
+        let removed = pendingQueue.remove(at: index)
+        if case .startRoutine(let id) = removed.kind { return id }
+        return nil
+    }
+
+    func consumeRestCompletedCommand() -> Bool {
+        guard let index = pendingQueue.firstIndex(where: { $0.kind == .restCompleted }) else { return false }
+        pendingQueue.remove(at: index)
         return true
     }
 
@@ -479,6 +598,10 @@ extension WatchConnectivityManager: WCSessionDelegate {
             Task { @MainActor in
                 guard let state = try? JSONDecoder().decode(WorkoutSyncState.self, from: data) else { return }
                 lastReceivedState = state
+                lastSyncReceivedAt = Date()
+                if state.sequence > 0 {
+                    sendAcknowledgement(sequence: state.sequence)
+                }
             }
             return
         }
@@ -486,26 +609,41 @@ extension WatchConnectivityManager: WCSessionDelegate {
         guard let commandRaw = message["command"] as? String,
               let command = WatchCommand(rawValue: commandRaw) else { return }
 
+        let commandIdString = message["commandId"] as? String
+        let commandUUID = commandIdString.flatMap { UUID(uuidString: $0) } ?? UUID()
+
         Task { @MainActor in
+            // Idempotency: drop already-processed command ids.
+            if processedCommandIds.contains(commandUUID) { return }
+            processedCommandIds.insert(commandUUID)
+            if processedCommandIds.count > 200 {
+                processedCommandIds = Set(processedCommandIds.suffix(100))
+            }
             switch command {
             case .completeCurrentSet:
-                pendingCompleteCurrentSetRequested = true
-                if let rawId = message["workoutId"] as? String, let id = UUID(uuidString: rawId) {
-                    pendingCompleteCurrentSetWorkoutId = id
-                } else {
-                    pendingCompleteCurrentSetWorkoutId = nil
-                }
+                let workoutId = (message["workoutId"] as? String).flatMap { UUID(uuidString: $0) }
+                let setId = (message["setId"] as? String).flatMap { UUID(uuidString: $0) }
+                pendingQueue.append(PendingWatchCommand(id: commandUUID, kind: .completeSet(setId: setId, workoutId: workoutId), receivedAt: Date()))
             case .endedWorkout:
-                pendingEndedWorkoutRequested = true
-                if let rawId = message["healthKitUUID"] as? String, let id = UUID(uuidString: rawId) {
-                    pendingEndedHealthKitUUID = id
-                } else {
-                    pendingEndedHealthKitUUID = nil
-                }
+                let healthId = (message["healthKitUUID"] as? String).flatMap { UUID(uuidString: $0) }
+                pendingQueue.append(PendingWatchCommand(id: commandUUID, kind: .ended(healthKitUUID: healthId), receivedAt: Date()))
             case .pauseWorkout:
-                pendingPauseWorkoutRequested = true
+                pendingQueue.append(PendingWatchCommand(id: commandUUID, kind: .pause, receivedAt: Date()))
             case .resumeWorkout:
-                pendingResumeWorkoutRequested = true
+                pendingQueue.append(PendingWatchCommand(id: commandUUID, kind: .resume, receivedAt: Date()))
+            case .requestState:
+                pendingQueue.append(PendingWatchCommand(id: commandUUID, kind: .requestState, receivedAt: Date()))
+            case .startQuickWorkout:
+                pendingQueue.append(PendingWatchCommand(id: commandUUID, kind: .startQuick, receivedAt: Date()))
+            case .startRoutineWorkout:
+                let routineId = (message["routineId"] as? String).flatMap { UUID(uuidString: $0) }
+                pendingQueue.append(PendingWatchCommand(id: commandUUID, kind: .startRoutine(routineId: routineId), receivedAt: Date()))
+            case .acknowledge:
+                if let seq = message["ackSequence"] as? Int {
+                    lastAcknowledgedSequence = max(lastAcknowledgedSequence, seq)
+                }
+            case .restCompleted:
+                pendingQueue.append(PendingWatchCommand(id: commandUUID, kind: .restCompleted, receivedAt: Date()))
             }
         }
     }
@@ -531,6 +669,27 @@ extension WCSessionActivationState {
     }
 }
 #endif
+
+extension WorkoutSyncState {
+    /// A hash of the meaningful state fields. Two states with the same hash should not be re-broadcast.
+    var compactHash: Int {
+        var hasher = Hasher()
+        hasher.combine(workoutId)
+        hasher.combine(name)
+        hasher.combine(status)
+        hasher.combine(Int(elapsedSeconds))
+        hasher.combine(currentExerciseId)
+        hasher.combine(currentSetId)
+        hasher.combine(currentSetIndex)
+        hasher.combine(completedSets)
+        hasher.combine(totalSets)
+        hasher.combine(restRemainingSeconds)
+        hasher.combine(restTotalSeconds)
+        hasher.combine(exercises.count)
+        hasher.combine(routines.count)
+        return hasher.finalize()
+    }
+}
 
 struct ExportManager {
     enum ExportKind: String {

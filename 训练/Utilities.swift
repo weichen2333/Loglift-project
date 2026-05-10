@@ -14,7 +14,9 @@ struct VolumeCalculator {
             return (max(0, set.leftWeight) + max(0, set.rightWeight)) * reps
         case .bodyweight:
             let load = includeBodyweight ? bodyweightKg + set.bodyweightAdditionalLoad : set.bodyweightAdditionalLoad
-            return max(0, load) * reps
+            // Pure bodyweight reps with no added load still produce work — fall back to bodyweight when not configured.
+            let effective = load > 0 ? load : (includeBodyweight ? 0 : bodyweightKg)
+            return max(0, effective) * reps
         case .assistedBodyweight:
             return max(0, bodyweightKg + set.bodyweightAdditionalLoad - set.assistanceWeight) * reps
         case .timeBased, .distanceBased:
@@ -23,22 +25,60 @@ struct VolumeCalculator {
     }
 }
 
+enum OneRepMaxFormula: String, CaseIterable, Identifiable, Codable {
+    case epley
+    case brzycki
+    case lombardi
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .epley: "Epley 公式"
+        case .brzycki: "Brzycki 公式"
+        case .lombardi: "Lombardi 公式"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .epley: "重量 × (1 + 次数/30)"
+        case .brzycki: "重量 × 36 / (37 − 次数)"
+        case .lombardi: "重量 × 次数^0.10"
+        }
+    }
+}
+
 struct OneRepMaxCalculator {
+    static let highRepThreshold = 25
+
     static func epley(weight: Double, reps: Int) -> Double {
         guard weight > 0, reps > 0 else { return 0 }
         return weight * (1 + Double(reps) / 30)
     }
 
-    static func bestEstimatedOneRepMax(from sets: [SetRecord]) -> Double {
+    static func brzycki(weight: Double, reps: Int) -> Double {
+        guard weight > 0, reps > 0, reps < 37 else { return 0 }
+        return weight * 36.0 / (37.0 - Double(reps))
+    }
+
+    static func lombardi(weight: Double, reps: Int) -> Double {
+        guard weight > 0, reps > 0 else { return 0 }
+        return weight * pow(Double(reps), 0.10)
+    }
+
+    static func estimate(weight: Double, reps: Int, formula: OneRepMaxFormula = .epley) -> Double {
+        guard reps <= highRepThreshold else { return 0 }
+        switch formula {
+        case .epley: return epley(weight: weight, reps: reps)
+        case .brzycki: return brzycki(weight: weight, reps: reps)
+        case .lombardi: return lombardi(weight: weight, reps: reps)
+        }
+    }
+
+    static func bestEstimatedOneRepMax(from sets: [SetRecord], formula: OneRepMaxFormula = .epley) -> Double {
         sets.filter(\.isCompleted).map { set in
-            let workingWeight: Double
-            switch set.weightMode {
-            case .leftRightSeparate:
-                workingWeight = set.leftWeight + set.rightWeight
-            default:
-                workingWeight = set.weight
-            }
-            return epley(weight: workingWeight, reps: set.actualReps)
+            estimate(weight: TrainingInsights.workingWeight(for: set), reps: set.actualReps, formula: formula)
         }.max() ?? 0
     }
 }
@@ -120,6 +160,102 @@ struct SetTarget: Identifiable, Hashable {
     let weightText: String
 }
 
+struct LastSetSummary: Hashable {
+    let date: Date
+    let workingWeight: Double
+    let reps: Int
+    let weightMode: WeightMode
+    let leftWeight: Double
+    let rightWeight: Double
+    let bodyweightAdditionalLoad: Double
+    let assistanceWeight: Double
+    let estimatedOneRepMax: Double
+    let topVolume: Double
+
+    var headlineText: String {
+        switch weightMode {
+        case .leftRightSeparate:
+            return "\(formatted(leftWeight))/\(formatted(rightWeight)) × \(reps)"
+        case .bodyweight:
+            return bodyweightAdditionalLoad > 0 ? "自重+\(formatted(bodyweightAdditionalLoad)) × \(reps)" : "自重 × \(reps)"
+        case .assistedBodyweight:
+            return "助力 \(formatted(assistanceWeight)) × \(reps)"
+        case .timeBased:
+            return "\(reps)秒"
+        case .distanceBased:
+            return "\(formatted(workingWeight))米"
+        default:
+            return "\(formatted(workingWeight)) × \(reps)"
+        }
+    }
+
+    private func formatted(_ value: Double) -> String {
+        value.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(value))" : String(format: "%.1f", value)
+    }
+}
+
+struct MuscleBalanceInsight: Identifiable, Hashable {
+    let id = UUID()
+    let muscle: MuscleGroup
+    let weeklySetCount: Int
+    let weeklyVolume: Double
+    let recommendation: String
+    let severity: Severity
+
+    enum Severity: String, Hashable {
+        case ok
+        case warning
+        case critical
+    }
+}
+
+struct WeeklyGoalProgress: Hashable {
+    let frequencyTarget: Int
+    let frequencyActual: Int
+    let volumeTarget: Double
+    let volumeActual: Double
+
+    var frequencyRatio: Double {
+        guard frequencyTarget > 0 else { return 0 }
+        return min(1, Double(frequencyActual) / Double(frequencyTarget))
+    }
+
+    var volumeRatio: Double {
+        guard volumeTarget > 0 else { return 0 }
+        return min(1, volumeActual / volumeTarget)
+    }
+}
+
+struct BodyWeightPoint: Identifiable, Hashable {
+    let id = UUID()
+    let date: Date
+    let kilograms: Double
+}
+
+struct PRCandidate: Hashable {
+    enum Kind: Hashable {
+        case maxWeight
+        case oneRepMax
+        case totalVolume
+    }
+    let exerciseId: UUID
+    let exerciseName: String
+    let kind: Kind
+    let value: Double
+    let previousValue: Double
+    let reps: Int
+
+    var deltaText: String {
+        let delta = value - previousValue
+        guard delta > 0 else { return "" }
+        return "+\(format(delta))"
+    }
+
+    private func format(_ value: Double) -> String {
+        value.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(value))" : String(format: "%.1f", value)
+    }
+}
+
 struct AggregationManager {
     static func weeklySummaries(from sessions: [WorkoutSession], calendar: Calendar = .current) -> [WeeklySummary] {
         let grouped = Dictionary(grouping: completedSessions(sessions)) { session in
@@ -168,11 +304,11 @@ struct AggregationManager {
     static func heartRateZones(samples: [HeartRateSample], maxHeartRate: Int) -> [HeartRateZone] {
         let maxHR = Double(maxHeartRate)
         let definitions: [(String, Double, Double?)] = [
-            ("Zone 1", 0, 0.60 * maxHR),
-            ("Zone 2", 0.60 * maxHR, 0.70 * maxHR),
-            ("Zone 3", 0.70 * maxHR, 0.80 * maxHR),
-            ("Zone 4", 0.80 * maxHR, 0.90 * maxHR),
-            ("Zone 5", 0.90 * maxHR, nil)
+            ("Z1·热身", 0, 0.60 * maxHR),
+            ("Z2·燃脂", 0.60 * maxHR, 0.70 * maxHR),
+            ("Z3·有氧", 0.70 * maxHR, 0.80 * maxHR),
+            ("Z4·阈值", 0.80 * maxHR, 0.90 * maxHR),
+            ("Z5·极限", 0.90 * maxHR, nil)
         ]
         return definitions.map { name, lower, upper in
             let count = samples.filter { sample in
@@ -268,6 +404,121 @@ struct TrainingInsights {
         return nil
     }
 
+    static func lastSet(for exerciseId: UUID, in sessions: [WorkoutSession], excluding sessionId: UUID? = nil, formula: OneRepMaxFormula = .epley) -> LastSetSummary? {
+        let candidates = AggregationManager.completedSessions(sessions)
+            .filter { sessionId == nil || $0.id != sessionId }
+            .sorted { $0.workoutDate > $1.workoutDate }
+
+        for session in candidates {
+            let matching = session.exercises.filter { $0.exerciseId == exerciseId }
+            let completedSets = matching.flatMap(\.sets).filter(\.isCompleted)
+            guard !completedSets.isEmpty else { continue }
+            let topSet = completedSets.max(by: { workingWeight(for: $0) < workingWeight(for: $1) }) ?? completedSets[0]
+            let oneRM = OneRepMaxCalculator.estimate(weight: workingWeight(for: topSet), reps: topSet.actualReps, formula: formula)
+            let topVolume = completedSets.reduce(0) { $0 + VolumeCalculator.volume(for: $1) }
+            return LastSetSummary(
+                date: session.workoutDate,
+                workingWeight: workingWeight(for: topSet),
+                reps: topSet.actualReps,
+                weightMode: topSet.weightMode,
+                leftWeight: topSet.leftWeight,
+                rightWeight: topSet.rightWeight,
+                bodyweightAdditionalLoad: topSet.bodyweightAdditionalLoad,
+                assistanceWeight: topSet.assistanceWeight,
+                estimatedOneRepMax: oneRM,
+                topVolume: topVolume
+            )
+        }
+        return nil
+    }
+
+    static func detectPersonalRecord(forCompleting set: SetRecord, exerciseId: UUID, exerciseName: String, in sessions: [WorkoutSession], excluding sessionId: UUID?, formula: OneRepMaxFormula = .epley) -> PRCandidate? {
+        let history = AggregationManager.completedSessions(sessions).filter { sessionId == nil || $0.id != sessionId }
+        let priorSets = history.flatMap(\.exercises).filter { $0.exerciseId == exerciseId }.flatMap(\.sets).filter(\.isCompleted)
+        let priorBestWeight = priorSets.map { workingWeight(for: $0) }.max() ?? 0
+        let priorBestOneRM = priorSets.map { OneRepMaxCalculator.estimate(weight: workingWeight(for: $0), reps: $0.actualReps, formula: formula) }.max() ?? 0
+
+        let currentWeight = workingWeight(for: set)
+        let currentOneRM = OneRepMaxCalculator.estimate(weight: currentWeight, reps: set.actualReps, formula: formula)
+
+        if currentOneRM > priorBestOneRM, currentOneRM > 0 {
+            return PRCandidate(exerciseId: exerciseId, exerciseName: exerciseName, kind: .oneRepMax, value: currentOneRM, previousValue: priorBestOneRM, reps: set.actualReps)
+        }
+        if currentWeight > priorBestWeight, currentWeight > 0 {
+            return PRCandidate(exerciseId: exerciseId, exerciseName: exerciseName, kind: .maxWeight, value: currentWeight, previousValue: priorBestWeight, reps: set.actualReps)
+        }
+        return nil
+    }
+
+    static func weeklyGoalProgress(target frequencyTarget: Int, volumeTarget: Double, sessions: [WorkoutSession], reference: Date = Date(), calendar: Calendar = .current) -> WeeklyGoalProgress {
+        let interval = calendar.dateInterval(of: .weekOfYear, for: reference) ?? DateInterval(start: reference, duration: 7 * 24 * 3600)
+        let weekSessions = AggregationManager.completedSessions(sessions).filter { interval.contains($0.workoutDate) }
+        let actualVolume = weekSessions.reduce(0) { $0 + $1.totalVolume }
+        return WeeklyGoalProgress(
+            frequencyTarget: frequencyTarget,
+            frequencyActual: weekSessions.count,
+            volumeTarget: volumeTarget,
+            volumeActual: actualVolume
+        )
+    }
+
+    static func muscleBalanceInsights(from sessions: [WorkoutSession], referenceDate: Date = Date(), calendar: Calendar = .current) -> [MuscleBalanceInsight] {
+        guard let interval = calendar.dateInterval(of: .weekOfYear, for: referenceDate) else { return [] }
+        let weekSessions = AggregationManager.completedSessions(sessions).filter { interval.contains($0.workoutDate) }
+        var muscleSets: [MuscleGroup: Int] = [:]
+        var muscleVolume: [MuscleGroup: Double] = [:]
+        for exercise in weekSessions.flatMap(\.exercises) {
+            let completed = exercise.sets.filter(\.isCompleted)
+            muscleSets[exercise.primaryMuscle, default: 0] += completed.count
+            muscleVolume[exercise.primaryMuscle, default: 0] += completed.reduce(0) { $0 + VolumeCalculator.volume(for: $1) }
+        }
+        let monitored: [MuscleGroup] = [.chest, .back, .legs, .shoulders, .arms, .core]
+        return monitored.map { muscle in
+            let count = muscleSets[muscle] ?? 0
+            let volume = muscleVolume[muscle] ?? 0
+            let severity: MuscleBalanceInsight.Severity
+            let recommendation: String
+            switch count {
+            case 0:
+                severity = .warning
+                recommendation = "本周尚未训练，建议尽快安排"
+            case 1...3:
+                severity = .ok
+                recommendation = "训练量较低，仍有发挥空间"
+            case 4...12:
+                severity = .ok
+                recommendation = "训练量均衡，状态良好"
+            default:
+                severity = .warning
+                recommendation = "训练量偏高，注意恢复"
+            }
+            return MuscleBalanceInsight(muscle: muscle, weeklySetCount: count, weeklyVolume: volume, recommendation: recommendation, severity: severity)
+        }
+    }
+
+    static func bodyWeightTrend(from measurements: [BodyMeasurement], range: ProgressTimeRange = .twelveWeeks, calendar: Calendar = .current) -> [BodyWeightPoint] {
+        let cutoff: Date? = {
+            guard let component = range.dateComponent else { return nil }
+            return calendar.date(byAdding: component, to: Date())
+        }()
+        return measurements
+            .filter { cutoff == nil || $0.date >= cutoff! }
+            .sorted { $0.date < $1.date }
+            .map { BodyWeightPoint(date: $0.date, kilograms: $0.bodyMassKg) }
+    }
+
+    static func strengthGain(for exerciseId: UUID, in sessions: [WorkoutSession], windowWeeks: Int = 8, formula: OneRepMaxFormula = .epley, calendar: Calendar = .current) -> Double? {
+        guard let cutoff = calendar.date(byAdding: .weekOfYear, value: -windowWeeks, to: Date()) else { return nil }
+        let completed = AggregationManager.completedSessions(sessions)
+        let priorSets = completed.filter { $0.workoutDate < cutoff }.flatMap(\.exercises).filter { $0.exerciseId == exerciseId }.flatMap(\.sets).filter(\.isCompleted)
+        let recentSets = completed.filter { $0.workoutDate >= cutoff }.flatMap(\.exercises).filter { $0.exerciseId == exerciseId }.flatMap(\.sets).filter(\.isCompleted)
+        guard !priorSets.isEmpty, !recentSets.isEmpty else { return nil }
+        let priorBest = priorSets.map { OneRepMaxCalculator.estimate(weight: workingWeight(for: $0), reps: $0.actualReps, formula: formula) }.max() ?? 0
+        let recentBest = recentSets.map { OneRepMaxCalculator.estimate(weight: workingWeight(for: $0), reps: $0.actualReps, formula: formula) }.max() ?? 0
+        guard priorBest > 0 else { return nil }
+        return ((recentBest - priorBest) / priorBest) * 100
+    }
+
     static func workingWeight(for set: SetRecord) -> Double {
         switch set.weightMode {
         case .leftRightSeparate:
@@ -288,13 +539,13 @@ struct TrainingInsights {
         case .leftRightSeparate:
             "\(Int(set.leftWeight))/\(Int(set.rightWeight))"
         case .timeBased:
-            "\(set.durationSeconds)s"
+            "\(set.durationSeconds)秒"
         case .distanceBased:
-            "\(Int(set.distanceMeters))m"
+            "\(Int(set.distanceMeters))米"
         case .bodyweight:
-            set.bodyweightAdditionalLoad > 0 ? "+\(Int(set.bodyweightAdditionalLoad))" : "BW"
+            set.bodyweightAdditionalLoad > 0 ? "+\(Int(set.bodyweightAdditionalLoad))" : "自重"
         case .assistedBodyweight:
-            "Assist \(Int(set.assistanceWeight))"
+            "助力 \(Int(set.assistanceWeight))"
         default:
             "\(Int(set.weight))"
         }
@@ -306,37 +557,56 @@ struct TrainingInsights {
 final class RestTimerManager {
     private(set) var endDate: Date?
     private(set) var remainingSeconds: Int = 0
+    private(set) var totalSeconds: Int = 0
+    var onFinish: (() -> Void)?
+
+    var progress: Double {
+        guard totalSeconds > 0 else { return 0 }
+        return min(1, max(0, 1 - Double(remainingSeconds) / Double(totalSeconds)))
+    }
+
+    var isRunning: Bool { endDate != nil && remainingSeconds > 0 }
 
     func start(seconds: Int) {
         let clamped = max(0, seconds)
+        totalSeconds = clamped
         remainingSeconds = clamped
-        endDate = Date().addingTimeInterval(TimeInterval(clamped))
+        endDate = clamped > 0 ? Date().addingTimeInterval(TimeInterval(clamped)) : nil
         scheduleNotification(after: clamped)
     }
 
     func skip() {
         remainingSeconds = 0
         endDate = nil
+        totalSeconds = 0
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rest-finished"])
     }
 
     func adjust(by seconds: Int) {
-        remainingSeconds = max(0, remainingSeconds + seconds)
-        endDate = Date().addingTimeInterval(TimeInterval(remainingSeconds))
+        let new = max(0, remainingSeconds + seconds)
+        remainingSeconds = new
+        totalSeconds = max(totalSeconds, new)
+        endDate = new > 0 ? Date().addingTimeInterval(TimeInterval(new)) : nil
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rest-finished"])
+        scheduleNotification(after: new)
     }
 
     func tick() {
         guard let endDate else { return }
+        let was = remainingSeconds
         remainingSeconds = max(0, Int(endDate.timeIntervalSinceNow.rounded()))
-        if remainingSeconds == 0 { self.endDate = nil }
+        if remainingSeconds == 0 {
+            self.endDate = nil
+            if was > 0 { onFinish?() }
+        }
     }
 
     private func scheduleNotification(after seconds: Int) {
         guard seconds > 0 else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         let content = UNMutableNotificationContent()
-        content.title = "Rest finished"
-        content.body = "Start your next set."
+        content.title = "休息结束"
+        content.body = "开始下一组训练吧。"
         content.sound = .default
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(seconds), repeats: false)
         let request = UNNotificationRequest(identifier: "rest-finished", content: content, trigger: trigger)
@@ -349,8 +619,8 @@ extension TimeInterval {
         let total = max(0, Int(self))
         let hours = total / 3600
         let minutes = (total % 3600) / 60
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        return "\(minutes)m"
+        if hours > 0 { return "\(hours)小时\(minutes)分" }
+        return "\(minutes)分"
     }
 }
 

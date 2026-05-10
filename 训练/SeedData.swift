@@ -33,55 +33,55 @@ enum SeedData {
 
     static func presetExercises() -> [Exercise] {
         [
-            // Chest
-            Exercise(name: "Bench Press", primaryMuscle: .chest, secondaryMuscles: [.shoulders, .arms], type: .barbell, instructions: "Keep shoulder blades retracted and press from a stable base."),
-            Exercise(name: "Incline Dumbbell Press", primaryMuscle: .chest, secondaryMuscles: [.shoulders], type: .dumbbell),
-            Exercise(name: "Push Up", primaryMuscle: .chest, secondaryMuscles: [.arms, .core], type: .bodyweight),
-            Exercise(name: "Cable Crossover", primaryMuscle: .chest, type: .cable),
-            Exercise(name: "Machine Chest Press", primaryMuscle: .chest, secondaryMuscles: [.shoulders, .arms], type: .machine),
-            Exercise(name: "Dumbbell Fly", primaryMuscle: .chest, type: .dumbbell),
+            // 胸
+            Exercise(name: "杠铃卧推", englishName: "Bench Press", primaryMuscle: .chest, secondaryMuscles: [.shoulders, .arms], type: .barbell, instructions: "保持肩胛骨回缩与稳定，从坚实支撑发力下压再推起。"),
+            Exercise(name: "上斜哑铃卧推", englishName: "Incline Dumbbell Press", primaryMuscle: .chest, secondaryMuscles: [.shoulders], type: .dumbbell),
+            Exercise(name: "俯卧撑", englishName: "Push Up", primaryMuscle: .chest, secondaryMuscles: [.arms, .core], type: .bodyweight),
+            Exercise(name: "拉索夹胸", englishName: "Cable Crossover", primaryMuscle: .chest, type: .cable),
+            Exercise(name: "坐姿器械推胸", englishName: "Machine Chest Press", primaryMuscle: .chest, secondaryMuscles: [.shoulders, .arms], type: .machine),
+            Exercise(name: "哑铃飞鸟", englishName: "Dumbbell Fly", primaryMuscle: .chest, type: .dumbbell),
 
-            // Back
-            Exercise(name: "Deadlift", primaryMuscle: .back, secondaryMuscles: [.legs, .core], type: .barbell),
-            Exercise(name: "Lat Pulldown", primaryMuscle: .back, secondaryMuscles: [.arms], type: .cable),
-            Exercise(name: "Seated Row", primaryMuscle: .back, secondaryMuscles: [.arms], type: .machine),
-            Exercise(name: "Pull Up", primaryMuscle: .back, secondaryMuscles: [.arms], type: .bodyweight),
-            Exercise(name: "Barbell Row", primaryMuscle: .back, secondaryMuscles: [.arms], type: .barbell),
-            Exercise(name: "Dumbbell Row", primaryMuscle: .back, secondaryMuscles: [.arms], type: .dumbbell),
-            Exercise(name: "Face Pull", primaryMuscle: .back, secondaryMuscles: [.shoulders], type: .cable),
+            // 背
+            Exercise(name: "硬拉", englishName: "Deadlift", primaryMuscle: .back, secondaryMuscles: [.legs, .core], type: .barbell),
+            Exercise(name: "高位下拉", englishName: "Lat Pulldown", primaryMuscle: .back, secondaryMuscles: [.arms], type: .cable),
+            Exercise(name: "坐姿划船", englishName: "Seated Row", primaryMuscle: .back, secondaryMuscles: [.arms], type: .machine),
+            Exercise(name: "引体向上", englishName: "Pull Up", primaryMuscle: .back, secondaryMuscles: [.arms], type: .bodyweight),
+            Exercise(name: "杠铃划船", englishName: "Barbell Row", primaryMuscle: .back, secondaryMuscles: [.arms], type: .barbell),
+            Exercise(name: "单臂哑铃划船", englishName: "Dumbbell Row", primaryMuscle: .back, secondaryMuscles: [.arms], type: .dumbbell),
+            Exercise(name: "面拉", englishName: "Face Pull", primaryMuscle: .back, secondaryMuscles: [.shoulders], type: .cable),
 
-            // Legs
-            Exercise(name: "Squat", primaryMuscle: .legs, secondaryMuscles: [.core], type: .barbell),
-            Exercise(name: "Leg Press", primaryMuscle: .legs, type: .plateLoaded),
-            Exercise(name: "Romanian Deadlift", primaryMuscle: .legs, secondaryMuscles: [.back], type: .barbell),
-            Exercise(name: "Leg Extension", primaryMuscle: .legs, type: .machine),
-            Exercise(name: "Leg Curl", primaryMuscle: .legs, type: .machine),
-            Exercise(name: "Calf Raise", primaryMuscle: .legs, type: .machine),
-            Exercise(name: "Bulgarian Split Squat", primaryMuscle: .legs, type: .dumbbell),
-            Exercise(name: "Hip Thrust", primaryMuscle: .legs, type: .barbell),
+            // 腿
+            Exercise(name: "深蹲", englishName: "Squat", primaryMuscle: .legs, secondaryMuscles: [.core], type: .barbell),
+            Exercise(name: "腿举", englishName: "Leg Press", primaryMuscle: .legs, type: .plateLoaded),
+            Exercise(name: "罗马尼亚硬拉", englishName: "Romanian Deadlift", primaryMuscle: .legs, secondaryMuscles: [.back], type: .barbell),
+            Exercise(name: "腿屈伸", englishName: "Leg Extension", primaryMuscle: .legs, type: .machine),
+            Exercise(name: "腿弯举", englishName: "Leg Curl", primaryMuscle: .legs, type: .machine),
+            Exercise(name: "提踵", englishName: "Calf Raise", primaryMuscle: .legs, type: .machine),
+            Exercise(name: "保加利亚分腿蹲", englishName: "Bulgarian Split Squat", primaryMuscle: .legs, type: .dumbbell),
+            Exercise(name: "臀推", englishName: "Hip Thrust", primaryMuscle: .legs, type: .barbell),
 
-            // Shoulders / Push
-            Exercise(name: "Shoulder Press", primaryMuscle: .shoulders, secondaryMuscles: [.arms], type: .dumbbell),
-            Exercise(name: "Overhead Press", primaryMuscle: .shoulders, secondaryMuscles: [.arms, .core], type: .barbell),
-            Exercise(name: "Lateral Raise", primaryMuscle: .shoulders, type: .dumbbell),
-            Exercise(name: "Front Raise", primaryMuscle: .shoulders, type: .dumbbell),
-            Exercise(name: "Triceps Pushdown", primaryMuscle: .arms, type: .cable),
-            Exercise(name: "Overhead Triceps Extension", primaryMuscle: .arms, type: .dumbbell),
-            Exercise(name: "Dips", primaryMuscle: .arms, secondaryMuscles: [.chest, .shoulders], type: .bodyweight),
+            // 肩 / 推
+            Exercise(name: "哑铃肩推", englishName: "Shoulder Press", primaryMuscle: .shoulders, secondaryMuscles: [.arms], type: .dumbbell),
+            Exercise(name: "杠铃推举", englishName: "Overhead Press", primaryMuscle: .shoulders, secondaryMuscles: [.arms, .core], type: .barbell),
+            Exercise(name: "侧平举", englishName: "Lateral Raise", primaryMuscle: .shoulders, type: .dumbbell),
+            Exercise(name: "前平举", englishName: "Front Raise", primaryMuscle: .shoulders, type: .dumbbell),
+            Exercise(name: "三头下压", englishName: "Triceps Pushdown", primaryMuscle: .arms, type: .cable),
+            Exercise(name: "颈后臂屈伸", englishName: "Overhead Triceps Extension", primaryMuscle: .arms, type: .dumbbell),
+            Exercise(name: "双杠臂屈伸", englishName: "Dips", primaryMuscle: .arms, secondaryMuscles: [.chest, .shoulders], type: .bodyweight),
 
-            // Arms (Pull/Curl)
-            Exercise(name: "Dumbbell Curl", primaryMuscle: .arms, type: .dumbbell),
-            Exercise(name: "Barbell Curl", primaryMuscle: .arms, type: .barbell),
-            Exercise(name: "Hammer Curl", primaryMuscle: .arms, type: .dumbbell),
-            Exercise(name: "Cable Curl", primaryMuscle: .arms, type: .cable),
+            // 手臂（拉/弯举）
+            Exercise(name: "哑铃弯举", englishName: "Dumbbell Curl", primaryMuscle: .arms, type: .dumbbell),
+            Exercise(name: "杠铃弯举", englishName: "Barbell Curl", primaryMuscle: .arms, type: .barbell),
+            Exercise(name: "锤式弯举", englishName: "Hammer Curl", primaryMuscle: .arms, type: .dumbbell),
+            Exercise(name: "拉索弯举", englishName: "Cable Curl", primaryMuscle: .arms, type: .cable),
 
-            // Core
-            Exercise(name: "Plank", primaryMuscle: .core, type: .bodyweight, defaultWeightMode: .timeBased),
-            Exercise(name: "Crunch", primaryMuscle: .core, type: .bodyweight),
-            Exercise(name: "Leg Raise", primaryMuscle: .core, type: .bodyweight),
-            Exercise(name: "Russian Twist", primaryMuscle: .core, type: .bodyweight),
-            Exercise(name: "Ab Wheel Rollout", primaryMuscle: .core, type: .bodyweight),
-            Exercise(name: "Cable Woodchopper", primaryMuscle: .core, type: .cable)
+            // 核心
+            Exercise(name: "平板支撑", englishName: "Plank", primaryMuscle: .core, type: .bodyweight, defaultWeightMode: .timeBased),
+            Exercise(name: "卷腹", englishName: "Crunch", primaryMuscle: .core, type: .bodyweight),
+            Exercise(name: "举腿", englishName: "Leg Raise", primaryMuscle: .core, type: .bodyweight),
+            Exercise(name: "俄罗斯转体", englishName: "Russian Twist", primaryMuscle: .core, type: .bodyweight),
+            Exercise(name: "腹轮", englishName: "Ab Wheel Rollout", primaryMuscle: .core, type: .bodyweight),
+            Exercise(name: "拉索砍木", englishName: "Cable Woodchopper", primaryMuscle: .core, type: .cable)
         ]
     }
 
@@ -92,40 +92,40 @@ enum SeedData {
     private static func seedRoutines(modelContext: ModelContext, exercises: [Exercise]) {
         func lookup(_ name: String) -> Exercise? { exercises.first { $0.name == name } }
 
-        let legs = WorkoutRoutine(name: "Legs", note: "Lower body strength and hypertrophy")
+        let legs = WorkoutRoutine(name: "腿部训练", note: "下肢力量与维度训练")
         legs.exercises = [
-            routineExercise(lookup("Squat"), sets: 4, reps: 6, weight: 80, order: 0),
-            routineExercise(lookup("Leg Press"), sets: 3, reps: 10, weight: 140, order: 1),
-            routineExercise(lookup("Romanian Deadlift"), sets: 3, reps: 8, weight: 70, order: 2),
-            routineExercise(lookup("Leg Extension"), sets: 3, reps: 12, weight: 40, order: 3),
-            routineExercise(lookup("Calf Raise"), sets: 4, reps: 15, weight: 60, order: 4)
+            routineExercise(lookup("深蹲"), sets: 4, reps: 6, weight: 80, order: 0),
+            routineExercise(lookup("腿举"), sets: 3, reps: 10, weight: 140, order: 1),
+            routineExercise(lookup("罗马尼亚硬拉"), sets: 3, reps: 8, weight: 70, order: 2),
+            routineExercise(lookup("腿屈伸"), sets: 3, reps: 12, weight: 40, order: 3),
+            routineExercise(lookup("提踵"), sets: 4, reps: 15, weight: 60, order: 4)
         ].compactMap { $0 }
 
-        let chest = WorkoutRoutine(name: "Chest", note: "Chest focused workout")
+        let chest = WorkoutRoutine(name: "胸部训练", note: "胸部主导训练日")
         chest.exercises = [
-            routineExercise(lookup("Bench Press"), sets: 4, reps: 6, weight: 60, order: 0),
-            routineExercise(lookup("Incline Dumbbell Press"), sets: 3, reps: 8, weight: 22.5, order: 1),
-            routineExercise(lookup("Machine Chest Press"), sets: 3, reps: 10, weight: 40, order: 2),
-            routineExercise(lookup("Cable Crossover"), sets: 3, reps: 12, weight: 15, order: 3),
-            routineExercise(lookup("Push Up"), sets: 3, reps: 15, weight: 0, order: 4)
+            routineExercise(lookup("杠铃卧推"), sets: 4, reps: 6, weight: 60, order: 0),
+            routineExercise(lookup("上斜哑铃卧推"), sets: 3, reps: 8, weight: 22.5, order: 1),
+            routineExercise(lookup("坐姿器械推胸"), sets: 3, reps: 10, weight: 40, order: 2),
+            routineExercise(lookup("拉索夹胸"), sets: 3, reps: 12, weight: 15, order: 3),
+            routineExercise(lookup("俯卧撑"), sets: 3, reps: 15, weight: 0, order: 4)
         ].compactMap { $0 }
 
-        let back = WorkoutRoutine(name: "Back", note: "Back thickness and width")
+        let back = WorkoutRoutine(name: "背部训练", note: "背部厚度与宽度")
         back.exercises = [
-            routineExercise(lookup("Deadlift"), sets: 3, reps: 5, weight: 100, order: 0),
-            routineExercise(lookup("Pull Up"), sets: 3, reps: 8, weight: 0, order: 1),
-            routineExercise(lookup("Barbell Row"), sets: 3, reps: 8, weight: 60, order: 2),
-            routineExercise(lookup("Lat Pulldown"), sets: 3, reps: 10, weight: 50, order: 3),
-            routineExercise(lookup("Face Pull"), sets: 3, reps: 15, weight: 20, order: 4)
+            routineExercise(lookup("硬拉"), sets: 3, reps: 5, weight: 100, order: 0),
+            routineExercise(lookup("引体向上"), sets: 3, reps: 8, weight: 0, order: 1),
+            routineExercise(lookup("杠铃划船"), sets: 3, reps: 8, weight: 60, order: 2),
+            routineExercise(lookup("高位下拉"), sets: 3, reps: 10, weight: 50, order: 3),
+            routineExercise(lookup("面拉"), sets: 3, reps: 15, weight: 20, order: 4)
         ].compactMap { $0 }
 
-        let core = WorkoutRoutine(name: "Core", note: "Abdominal strength and stability")
+        let core = WorkoutRoutine(name: "核心训练", note: "腹部力量与稳定性")
         core.exercises = [
-            routineExercise(lookup("Plank"), sets: 3, reps: 0, weight: 0, order: 0, rest: 60),
-            routineExercise(lookup("Crunch"), sets: 3, reps: 20, weight: 0, order: 1, rest: 60),
-            routineExercise(lookup("Leg Raise"), sets: 3, reps: 15, weight: 0, order: 2, rest: 60),
-            routineExercise(lookup("Russian Twist"), sets: 3, reps: 20, weight: 0, order: 3, rest: 60),
-            routineExercise(lookup("Cable Woodchopper"), sets: 3, reps: 12, weight: 15, order: 4, rest: 60)
+            routineExercise(lookup("平板支撑"), sets: 3, reps: 0, weight: 0, order: 0, rest: 60),
+            routineExercise(lookup("卷腹"), sets: 3, reps: 20, weight: 0, order: 1, rest: 60),
+            routineExercise(lookup("举腿"), sets: 3, reps: 15, weight: 0, order: 2, rest: 60),
+            routineExercise(lookup("俄罗斯转体"), sets: 3, reps: 20, weight: 0, order: 3, rest: 60),
+            routineExercise(lookup("拉索砍木"), sets: 3, reps: 12, weight: 15, order: 4, rest: 60)
         ].compactMap { $0 }
 
         [legs, chest, back, core].forEach(modelContext.insert)
@@ -148,7 +148,7 @@ enum SeedData {
 
     private static func seedWorkoutHistory(modelContext: ModelContext, exercises: [Exercise]) {
         let calendar = Calendar.current
-        let names = ["Push Day", "Pull Day", "Leg Day", "Upper Body"]
+        let names = ["推日", "拉日", "腿日", "上肢训练"]
         for offset in stride(from: 28, through: 3, by: -5) {
             let date = calendar.date(byAdding: .day, value: -offset, to: Date()) ?? Date()
             let selected = Array(exercises.shuffled().prefix(4))
@@ -173,7 +173,7 @@ enum SeedData {
                 return WorkoutExercise(exerciseId: exercise.id, exerciseName: exercise.name, primaryMuscle: exercise.primaryMuscle, exerciseType: exercise.type, sortOrder: index, sets: sets)
             }
             let session = WorkoutSession(
-                name: names.randomElement() ?? "Workout",
+                name: names.randomElement() ?? "训练",
                 startedAt: date,
                 endedAt: date.addingTimeInterval(3600 + Double(offset * 20)),
                 workoutDate: date,

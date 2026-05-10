@@ -233,9 +233,10 @@
 				};
 			};
 			buildConfigurationList = 411180D52FADBE9A00BA3BE2 /* Build configuration list for PBXProject "训练" */;
-			developmentRegion = en;
+			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
 			knownRegions = (
+				"zh-Hans",
 				en,
 				Base,
 			);
@@ -647,7 +648,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = LiftLog;
+				INFOPLIST_KEY_CFBundleDisplayName = "训练";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "LiftLog Watch reads live heart rate and active energy during strength workouts.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "LiftLog Watch saves completed strength workouts and active energy to Apple Health.";
 				INFOPLIST_KEY_WKApplication = YES;
@@ -677,7 +678,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = LiftLog;
+				INFOPLIST_KEY_CFBundleDisplayName = "训练";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "LiftLog Watch reads live heart rate and active energy during strength workouts.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "LiftLog Watch saves completed strength workouts and active energy to Apple Health.";
 				INFOPLIST_KEY_WKApplication = YES;
