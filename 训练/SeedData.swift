@@ -8,10 +8,11 @@ enum SeedData {
             if exerciseCount == 0 {
                 seedExercises(modelContext: modelContext)
             }
+            let exercises = try modelContext.fetch(FetchDescriptor<Exercise>())
+            applyPresetDefaults(to: exercises)
 
             let routineCount = try modelContext.fetchCount(FetchDescriptor<WorkoutRoutine>())
             if routineCount == 0 {
-                let exercises = try modelContext.fetch(FetchDescriptor<Exercise>())
                 seedRoutines(modelContext: modelContext, exercises: exercises)
             }
 
@@ -22,7 +23,6 @@ enum SeedData {
 
             let workoutCount = try modelContext.fetchCount(FetchDescriptor<WorkoutSession>())
             if workoutCount == 0 {
-                let exercises = try modelContext.fetch(FetchDescriptor<Exercise>())
                 seedWorkoutHistory(modelContext: modelContext, exercises: exercises)
             }
             try modelContext.save()
@@ -87,6 +87,34 @@ enum SeedData {
 
     private static func seedExercises(modelContext: ModelContext) {
         presetExercises().forEach(modelContext.insert)
+    }
+
+    private static func applyPresetDefaults(to exercises: [Exercise]) {
+        let leftRightNames: Set<String> = [
+            "Incline Dumbbell Press",
+            "Dumbbell Fly",
+            "Dumbbell Row",
+            "Bulgarian Split Squat",
+            "Shoulder Press",
+            "Lateral Raise",
+            "Front Raise",
+            "Overhead Triceps Extension",
+            "Dumbbell Curl",
+            "Hammer Curl"
+        ]
+
+        for exercise in exercises where !exercise.isCustom {
+            let tracksLeftRight = leftRightNames.contains(exercise.name) || exercise.type == .dumbbell || exercise.type == .kettlebell || exercise.type == .unilateral
+            let mode: WeightMode
+            switch exercise.name {
+            case "Plank":
+                mode = .timeBased
+            default:
+                mode = WeightMode.defaultMode(for: exercise.type, isUnilateral: tracksLeftRight)
+            }
+            exercise.tracksLeftRightSeparately = tracksLeftRight
+            exercise.defaultWeightMode = mode
+        }
     }
 
     private static func seedRoutines(modelContext: ModelContext, exercises: [Exercise]) {

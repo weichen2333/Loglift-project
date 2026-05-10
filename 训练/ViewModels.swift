@@ -17,8 +17,30 @@ final class ExerciseLibraryViewModel {
         }.sorted { $0.name < $1.name }
     }
 
-    func addExercise(modelContext: ModelContext, name: String, muscle: MuscleGroup, type: ExerciseType) {
-        let exercise = Exercise(name: name, primaryMuscle: muscle, type: type, isCustom: true)
+    func addExercise(
+        modelContext: ModelContext,
+        name: String,
+        englishName: String?,
+        muscle: MuscleGroup,
+        secondaryMuscles: [MuscleGroup],
+        type: ExerciseType,
+        defaultWeightMode: WeightMode,
+        tracksLeftRightSeparately: Bool,
+        instructions: String,
+        cautions: String
+    ) {
+        let exercise = Exercise(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            englishName: englishName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            primaryMuscle: muscle,
+            secondaryMuscles: secondaryMuscles,
+            type: type,
+            instructions: instructions,
+            cautions: cautions,
+            defaultWeightMode: defaultWeightMode,
+            tracksLeftRightSeparately: tracksLeftRightSeparately,
+            isCustom: true
+        )
         modelContext.insert(exercise)
         try? modelContext.save()
     }
@@ -44,16 +66,19 @@ final class RoutineViewModel {
             let exercise = exerciseLibrary.first { $0.id == routineExercise.exerciseId }
             let mode = exercise?.defaultWeightMode ?? .sameWeight
             let sets = (1...routineExercise.targetSets).map { setIndex in
-                SetRecord(
+                let targetWeight = routineExercise.targetWeight
+                return SetRecord(
                     exerciseId: routineExercise.exerciseId,
                     setIndex: setIndex,
                     setType: routineExercise.enableWarmupSets && setIndex == 1 ? .warmup : .normal,
                     targetReps: routineExercise.targetReps,
                     actualReps: routineExercise.targetReps,
                     weightMode: mode,
-                    weight: routineExercise.targetWeight,
-                    leftWeight: mode == .leftRightSeparate ? routineExercise.targetWeight : 0,
-                    rightWeight: mode == .leftRightSeparate ? routineExercise.targetWeight : 0
+                    weight: mode.usesSingleLoadField ? targetWeight : 0,
+                    leftWeight: mode == .leftRightSeparate ? targetWeight : 0,
+                    rightWeight: mode == .leftRightSeparate ? targetWeight : 0,
+                    bodyweightAdditionalLoad: mode == .bodyweight ? targetWeight : 0,
+                    assistanceWeight: mode == .assistedBodyweight ? targetWeight : 0
                 )
             }
             return WorkoutExercise(
@@ -147,6 +172,7 @@ final class RoutineViewModel {
 final class WorkoutSessionViewModel {
     var restTimer = RestTimerManager()
     var currentWorkout: WorkoutSession?
+    private var pendingSyncTask: Task<Void, Never>?
 
     func startEmptyWorkout(modelContext: ModelContext) -> WorkoutSession {
         let session = WorkoutSession(name: "Quick Workout", source: .manual, status: .active)
@@ -167,11 +193,12 @@ final class WorkoutSessionViewModel {
             sets: [SetRecord(exerciseId: exercise.id, setIndex: 1, actualReps: 10, weightMode: exercise.defaultWeightMode)]
         )
         session.exercises.append(workoutExercise)
+        currentWorkout = session
         try? modelContext.save()
         sync(session)
     }
 
-    func addSet(to workoutExercise: WorkoutExercise, modelContext: ModelContext) {
+    func addSet(to workoutExercise: WorkoutExercise, in session: WorkoutSession? = nil, modelContext: ModelContext) {
         let sorted = workoutExercise.sets.sorted { $0.setIndex < $1.setIndex }
         let last = sorted.last
         let newSet = SetRecord(
@@ -193,6 +220,12 @@ final class WorkoutSessionViewModel {
         )
         workoutExercise.sets.append(newSet)
         try? modelContext.save()
+        if let session {
+            currentWorkout = session
+            sync(session)
+        } else if let currentWorkout {
+            sync(currentWorkout)
+        }
     }
 
     func deleteSet(_ set: SetRecord, from workoutExercise: WorkoutExercise, modelContext: ModelContext) {
@@ -200,6 +233,9 @@ final class WorkoutSessionViewModel {
         modelContext.delete(set)
         renumberSets(for: workoutExercise)
         try? modelContext.save()
+        if let currentWorkout {
+            sync(currentWorkout)
+        }
     }
 
     func deleteExercise(_ workoutExercise: WorkoutExercise, from session: WorkoutSession, modelContext: ModelContext) {
@@ -209,45 +245,69 @@ final class WorkoutSessionViewModel {
             exercise.sortOrder = index
         }
         try? modelContext.save()
+        currentWorkout = session
         sync(session)
     }
 
-    func complete(_ set: SetRecord, in session: WorkoutSession, restSeconds: Int, autoStartRest: Bool, modelContext: ModelContext) {
+    func complete(_ set: SetRecord, in session: WorkoutSession, restSeconds: Int, autoStartRest: Bool, unit: WeightUnit = .kg, modelContext: ModelContext) {
         set.toggleCompletion()
         if set.isCompleted && autoStartRest {
-            restTimer.start(seconds: restSeconds)
+            restTimer.start(seconds: restSeconds, nextSet: TrainingInsights.nextSet(in: session, unit: unit))
         }
         try? modelContext.save()
         sync(session)
     }
 
-    func completeNextSet(in session: WorkoutSession, autoStartRest: Bool, modelContext: ModelContext) {
+    func completeNextSet(in session: WorkoutSession, autoStartRest: Bool, unit: WeightUnit = .kg, modelContext: ModelContext) {
         for exercise in session.exercises.sorted(by: { $0.sortOrder < $1.sortOrder }) {
             if let set = exercise.sets.sorted(by: { $0.setIndex < $1.setIndex }).first(where: { !$0.isCompleted }) {
-                complete(set, in: session, restSeconds: exercise.defaultRestSeconds, autoStartRest: autoStartRest, modelContext: modelContext)
+                complete(set, in: session, restSeconds: exercise.defaultRestSeconds, autoStartRest: autoStartRest, unit: unit, modelContext: modelContext)
                 return
             }
         }
     }
 
+    func skipRest(in session: WorkoutSession) {
+        restTimer.skip()
+        sync(session)
+    }
+
+    func adjustRest(by seconds: Int, in session: WorkoutSession) {
+        restTimer.adjust(by: seconds)
+        sync(session)
+    }
+
+    func tickRestTimer(for session: WorkoutSession) {
+        guard session.status == .active else { return }
+        let previousSeconds = restTimer.remainingSeconds
+        restTimer.tick()
+        if previousSeconds != restTimer.remainingSeconds {
+            sync(session)
+        }
+    }
+
     func pause(_ session: WorkoutSession, modelContext: ModelContext) {
+        restTimer.pause()
         session.status = .paused
         try? modelContext.save()
         HealthKitManager.shared.pauseWorkout()
         sync(session)
     }
 
-    func resume(_ session: WorkoutSession, modelContext: ModelContext) {
+    func resume(_ session: WorkoutSession, unit: WeightUnit = .kg, modelContext: ModelContext) {
         session.status = .active
+        restTimer.resume(nextSet: TrainingInsights.nextSet(in: session, unit: unit))
         try? modelContext.save()
         HealthKitManager.shared.resumeWorkout()
         sync(session)
     }
 
-    func finish(_ session: WorkoutSession, modelContext: ModelContext, writeToHealth: Bool = true, healthKitWorkoutUUID: UUID? = nil) async {
+    func finish(_ session: WorkoutSession, modelContext: ModelContext, writeToHealth: Bool = true, healthKitWorkoutUUID: UUID? = nil, watchMetrics: WatchWorkoutMetricsPayload? = nil) async {
+        restTimer.skip()
         session.status = .completed
         session.endedAt = Date()
         let hk = HealthKitManager.shared
+        apply(watchMetrics, healthKitWorkoutUUID: healthKitWorkoutUUID, to: session)
         if session.heartRateSamples.isEmpty {
             session.heartRateSamples = hk.liveHeartRateSamples
         }
@@ -269,9 +329,35 @@ final class WorkoutSessionViewModel {
         sync(session)
     }
 
+    func applyWatchMetrics(_ metrics: WatchWorkoutMetricsPayload?, healthKitWorkoutUUID: UUID?, to session: WorkoutSession, modelContext: ModelContext) {
+        apply(metrics, healthKitWorkoutUUID: healthKitWorkoutUUID, to: session)
+        try? modelContext.save()
+        sync(session)
+    }
+
     func delete(_ session: WorkoutSession, modelContext: ModelContext) {
         modelContext.delete(session)
         try? modelContext.save()
+    }
+
+    func discard(_ session: WorkoutSession, modelContext: ModelContext) {
+        restTimer.skip()
+        session.status = .cancelled
+        session.endedAt = Date()
+        sync(session)
+        modelContext.delete(session)
+        try? modelContext.save()
+    }
+
+    func publishState(for session: WorkoutSession, debounced: Bool = false) {
+        currentWorkout = session
+        if debounced {
+            scheduleSync(session)
+        } else {
+            pendingSyncTask?.cancel()
+            pendingSyncTask = nil
+            sync(session)
+        }
     }
 
     func deleteAllWorkoutHistory(modelContext: ModelContext) throws {
@@ -316,6 +402,15 @@ final class WorkoutSessionViewModel {
         }
     }
 
+    private func scheduleSync(_ session: WorkoutSession) {
+        pendingSyncTask?.cancel()
+        pendingSyncTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            self?.sync(session)
+        }
+    }
+
     private func sync(_ session: WorkoutSession) {
         let firstIncompleteExercise = session.exercises.sorted { $0.sortOrder < $1.sortOrder }.first { exercise in
             exercise.sets.contains { !$0.isCompleted }
@@ -326,14 +421,70 @@ final class WorkoutSessionViewModel {
             name: session.name,
             status: session.status,
             elapsedSeconds: session.duration,
+            currentWorkoutExerciseId: firstIncompleteExercise?.id,
+            currentSetId: firstIncompleteSet?.id,
             currentExerciseName: firstIncompleteExercise?.exerciseName,
             currentSetIndex: firstIncompleteSet?.setIndex,
             completedSets: session.completedSetCount,
             currentHeartRate: HealthKitManager.shared.currentHeartRate,
             averageHeartRate: HealthKitManager.shared.averageHeartRate ?? session.averageHeartRate,
             activeEnergyKcal: HealthKitManager.shared.activeEnergyKcal ?? session.activeEnergyKcal,
-            restRemainingSeconds: restTimer.remainingSeconds
+            restRemainingSeconds: restTimer.remainingSeconds,
+            availableRoutines: nil,
+            workoutExercises: session.watchWorkoutSnapshots
         ))
+    }
+
+    private func apply(_ metrics: WatchWorkoutMetricsPayload?, healthKitWorkoutUUID: UUID?, to session: WorkoutSession) {
+        if let healthKitWorkoutUUID {
+            session.healthKitWorkoutUUID = healthKitWorkoutUUID
+        }
+        guard let metrics else { return }
+        if !metrics.heartRateSamples.isEmpty {
+            session.heartRateSamples = metrics.heartRateSamples.map { sample in
+                HeartRateSample(timestamp: sample.timestamp, bpm: sample.bpm)
+            }
+            session.maxHeartRate = session.heartRateSamples.map(\.bpm).max() ?? session.maxHeartRate
+            session.minHeartRate = session.heartRateSamples.map(\.bpm).min() ?? session.minHeartRate
+        }
+        let sampleAverage = metrics.heartRateSamples.isEmpty ? nil : metrics.heartRateSamples.reduce(0) { $0 + $1.bpm } / Double(metrics.heartRateSamples.count)
+        session.averageHeartRate = metrics.averageHeartRate ?? sampleAverage ?? metrics.currentHeartRate ?? session.averageHeartRate
+        session.activeEnergyKcal = metrics.activeEnergyKcal ?? session.activeEnergyKcal
+    }
+}
+
+extension WorkoutSession {
+    var watchWorkoutSnapshots: [WatchWorkoutExerciseSnapshot] {
+        exercises.sorted { $0.sortOrder < $1.sortOrder }.map { workoutExercise in
+            let sets = workoutExercise.sets.sorted { $0.setIndex < $1.setIndex }.map { set in
+                WatchSetSnapshot(
+                    id: set.id,
+                    setIndex: set.setIndex,
+                    setType: set.setType.title,
+                    targetReps: set.targetReps,
+                    actualReps: set.actualReps,
+                    weightMode: set.weightMode.title,
+                    weight: set.weight,
+                    leftWeight: set.leftWeight,
+                    rightWeight: set.rightWeight,
+                    bodyweightAdditionalLoad: set.bodyweightAdditionalLoad,
+                    assistanceWeight: set.assistanceWeight,
+                    durationSeconds: set.durationSeconds,
+                    distanceMeters: set.distanceMeters,
+                    rpe: set.rpe,
+                    isCompleted: set.isCompleted
+                )
+            }
+            return WatchWorkoutExerciseSnapshot(
+                id: workoutExercise.id,
+                exerciseId: workoutExercise.exerciseId,
+                name: workoutExercise.exerciseName,
+                sortOrder: workoutExercise.sortOrder,
+                completedSets: sets.filter(\.isCompleted).count,
+                totalSets: sets.count,
+                sets: sets
+            )
+        }
     }
 }
 

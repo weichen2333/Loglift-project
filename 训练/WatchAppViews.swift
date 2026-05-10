@@ -41,13 +41,17 @@ struct StartWorkoutView: View {
                                 name: routine,
                                 status: .active,
                                 elapsedSeconds: 0,
+                                currentWorkoutExerciseId: nil,
+                                currentSetId: nil,
                                 currentExerciseName: nil,
                                 currentSetIndex: nil,
                                 completedSets: 0,
                                 currentHeartRate: nil,
                                 averageHeartRate: nil,
                                 activeEnergyKcal: nil,
-                                restRemainingSeconds: nil
+                                restRemainingSeconds: nil,
+                                availableRoutines: nil,
+                                workoutExercises: nil
                             ))
                             isActive = true
                         }

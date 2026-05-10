@@ -252,7 +252,7 @@ struct TrainingInsights {
             .map { $0 }
     }
 
-    static func nextSet(in session: WorkoutSession) -> SetTarget? {
+    static func nextSet(in session: WorkoutSession, unit: WeightUnit = .kg) -> SetTarget? {
         for exercise in session.exercises.sorted(by: { $0.sortOrder < $1.sortOrder }) {
             if let set = exercise.sets.sorted(by: { $0.setIndex < $1.setIndex }).first(where: { !$0.isCompleted }) {
                 return SetTarget(
@@ -261,7 +261,7 @@ struct TrainingInsights {
                     setIndex: set.setIndex,
                     setType: set.setType,
                     reps: set.actualReps,
-                    weightText: displayWeight(for: set)
+                    weightText: displayWeight(for: set, unit: unit)
                 )
             }
         }
@@ -283,21 +283,26 @@ struct TrainingInsights {
         }
     }
 
-    static func displayWeight(for set: SetRecord) -> String {
-        switch set.weightMode {
+    static func displayWeight(for set: SetRecord, unit: WeightUnit = .kg) -> String {
+        let suffix = unit.fieldSuffix
+        return switch set.weightMode {
         case .leftRightSeparate:
-            "\(Int(set.leftWeight))/\(Int(set.rightWeight))"
+            "\(format(set.leftWeight))/\(format(set.rightWeight)) \(suffix)"
         case .timeBased:
             "\(set.durationSeconds)s"
         case .distanceBased:
             "\(Int(set.distanceMeters))m"
         case .bodyweight:
-            set.bodyweightAdditionalLoad > 0 ? "+\(Int(set.bodyweightAdditionalLoad))" : "BW"
+            set.bodyweightAdditionalLoad > 0 ? "+\(format(set.bodyweightAdditionalLoad)) \(suffix)" : "BW"
         case .assistedBodyweight:
-            "Assist \(Int(set.assistanceWeight))"
+            "Assist \(format(set.assistanceWeight)) \(suffix)"
         default:
-            "\(Int(set.weight))"
+            "\(format(set.weight)) \(suffix)"
         }
+    }
+
+    private static func format(_ value: Double) -> String {
+        value.rounded() == value ? "\(Int(value))" : String(format: "%.1f", value)
     }
 }
 
@@ -307,11 +312,11 @@ final class RestTimerManager {
     private(set) var endDate: Date?
     private(set) var remainingSeconds: Int = 0
 
-    func start(seconds: Int) {
+    func start(seconds: Int, nextSet: SetTarget? = nil) {
         let clamped = max(0, seconds)
         remainingSeconds = clamped
         endDate = Date().addingTimeInterval(TimeInterval(clamped))
-        scheduleNotification(after: clamped)
+        scheduleNotification(after: clamped, nextSet: nextSet)
     }
 
     func skip() {
@@ -320,9 +325,32 @@ final class RestTimerManager {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rest-finished"])
     }
 
+    func pause() {
+        tick()
+        guard remainingSeconds > 0 else {
+            endDate = nil
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rest-finished"])
+            return
+        }
+        endDate = nil
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rest-finished"])
+    }
+
+    func resume(nextSet: SetTarget? = nil) {
+        guard remainingSeconds > 0, endDate == nil else { return }
+        endDate = Date().addingTimeInterval(TimeInterval(remainingSeconds))
+        scheduleNotification(after: remainingSeconds, nextSet: nextSet)
+    }
+
     func adjust(by seconds: Int) {
         remainingSeconds = max(0, remainingSeconds + seconds)
-        endDate = Date().addingTimeInterval(TimeInterval(remainingSeconds))
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rest-finished"])
+        if remainingSeconds > 0 {
+            endDate = Date().addingTimeInterval(TimeInterval(remainingSeconds))
+            scheduleNotification(after: remainingSeconds, nextSet: nil)
+        } else {
+            endDate = nil
+        }
     }
 
     func tick() {
@@ -331,13 +359,22 @@ final class RestTimerManager {
         if remainingSeconds == 0 { self.endDate = nil }
     }
 
-    private func scheduleNotification(after seconds: Int) {
+    private func scheduleNotification(after seconds: Int, nextSet: SetTarget?) {
         guard seconds > 0 else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         let content = UNMutableNotificationContent()
-        content.title = "Rest finished"
-        content.body = "Start your next set."
+        content.title = "Next set ready"
+        if let nextSet {
+            content.body = "\(nextSet.exerciseName) · Set \(nextSet.setIndex) · \(nextSet.weightText) x \(nextSet.reps)"
+        } else {
+            content.body = "Start your next set."
+        }
         content.sound = .default
+        content.threadIdentifier = "workout-rest"
+        content.categoryIdentifier = "REST_FINISHED"
+        if #available(iOS 15.0, watchOS 8.0, macOS 12.0, *) {
+            content.interruptionLevel = .timeSensitive
+        }
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(seconds), repeats: false)
         let request = UNNotificationRequest(identifier: "rest-finished", content: content, trigger: trigger)
         UNUserNotificationCenter.current().add(request)
@@ -357,5 +394,11 @@ extension TimeInterval {
 extension Date {
     var dayKey: Date {
         Calendar.current.startOfDay(for: self)
+    }
+}
+
+extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

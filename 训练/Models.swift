@@ -112,6 +112,15 @@ enum WeightUnit: String, Codable, CaseIterable, Identifiable {
     case lb
 
     var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .kg: "Kilograms"
+        case .lb: "Pounds"
+        }
+    }
+
+    var fieldSuffix: String { rawValue }
 }
 
 enum AppTheme: String, Codable, CaseIterable, Identifiable {
@@ -571,6 +580,44 @@ extension WeightMode {
         case .cable: return .cable
         case .cardio: return .distanceBased
         case .other: return .sameWeight
+        }
+    }
+
+    static func recommendedModes(for type: ExerciseType, isUnilateral: Bool = false) -> [WeightMode] {
+        let recommended = defaultMode(for: type, isUnilateral: isUnilateral)
+        let all = WeightMode.allCases
+        return [recommended] + all.filter { $0 != recommended }
+    }
+
+    var setupHint: String {
+        switch self {
+        case .sameWeight:
+            return "Use one total load for the set. Best for barbell lifts and single-stack entries."
+        case .leftRightSeparate:
+            return "Track left and right loads independently. Best for dumbbells, kettlebells, and unilateral work."
+        case .bodyweight:
+            return "Track reps plus optional added load."
+        case .assistedBodyweight:
+            return "Track reps plus assistance load."
+        case .machineStack:
+            return "Track the machine stack load."
+        case .plateLoaded:
+            return "Track total plate-loaded machine load."
+        case .cable:
+            return "Track the cable stack or pin load."
+        case .timeBased:
+            return "Track duration instead of reps and load."
+        case .distanceBased:
+            return "Track distance and duration."
+        }
+    }
+
+    var usesSingleLoadField: Bool {
+        switch self {
+        case .sameWeight, .machineStack, .plateLoaded, .cable:
+            true
+        case .leftRightSeparate, .bodyweight, .assistedBodyweight, .timeBased, .distanceBased:
+            false
         }
     }
 }
