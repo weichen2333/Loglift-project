@@ -20,13 +20,13 @@ final class ExerciseLibraryViewModel {
     func addExercise(modelContext: ModelContext, name: String, muscle: MuscleGroup, type: ExerciseType) {
         let exercise = Exercise(name: name, primaryMuscle: muscle, type: type, isCustom: true)
         modelContext.insert(exercise)
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     func deleteIfCustom(_ exercise: Exercise, modelContext: ModelContext) {
         guard exercise.isCustom else { return }
         modelContext.delete(exercise)
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 }
 
@@ -35,7 +35,7 @@ final class RoutineViewModel {
     func createRoutine(name: String, note: String, modelContext: ModelContext) -> WorkoutRoutine {
         let routine = WorkoutRoutine(name: name.trimmingCharacters(in: .whitespacesAndNewlines), note: note)
         modelContext.insert(routine)
-        try? modelContext.save()
+        saveOrLog(modelContext)
         return routine
     }
 
@@ -68,7 +68,7 @@ final class RoutineViewModel {
         }
         let session = WorkoutSession(name: routine.name, source: .routine, status: .active, exercises: workoutExercises)
         modelContext.insert(session)
-        try? modelContext.save()
+        saveOrLog(modelContext)
         return session
     }
 
@@ -88,7 +88,7 @@ final class RoutineViewModel {
             )
         }
         modelContext.insert(copy)
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     func addExercise(_ exercise: Exercise, to routine: WorkoutRoutine, modelContext: ModelContext) {
@@ -103,7 +103,7 @@ final class RoutineViewModel {
         )
         routine.exercises.append(item)
         routine.updatedAt = Date()
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     func deleteExercises(at offsets: IndexSet, from routine: WorkoutRoutine, modelContext: ModelContext) {
@@ -113,7 +113,7 @@ final class RoutineViewModel {
         }
         renumber(routine)
         routine.updatedAt = Date()
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     func moveExercises(from source: IndexSet, to destination: Int, in routine: WorkoutRoutine, modelContext: ModelContext) {
@@ -128,12 +128,12 @@ final class RoutineViewModel {
             exercise.sortOrder = index
         }
         routine.updatedAt = Date()
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     func delete(_ routine: WorkoutRoutine, modelContext: ModelContext) {
         modelContext.delete(routine)
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     private func renumber(_ routine: WorkoutRoutine) {
@@ -149,6 +149,9 @@ final class WorkoutSessionViewModel {
     var currentWorkout: WorkoutSession?
     var pendingPRCelebration: PRCandidate?
     var pendingValidationWarning: String?
+    /// Surface for save-path failures on user-visible operations (finish / discard).
+    /// Cleared via `clearSaveError()` from the UI alert button.
+    var pendingSaveErrorMessage: String?
     private(set) var availableSessionsCache: [WorkoutSession] = []
     private(set) var availableRoutinesCache: [WorkoutRoutine] = []
     private(set) var oneRepMaxFormula: OneRepMaxFormula = .epley
@@ -174,7 +177,7 @@ final class WorkoutSessionViewModel {
         modelContext.insert(session)
         currentWorkout = session
         sync(session)
-        try? modelContext.save()
+        saveOrLog(modelContext)
         return session
     }
 
@@ -196,7 +199,7 @@ final class WorkoutSessionViewModel {
             sets: [SetRecord(exerciseId: exercise.id, setIndex: 1, actualReps: 10, weightMode: exercise.defaultWeightMode)]
         )
         session.exercises.append(workoutExercise)
-        try? modelContext.save()
+        saveOrLog(modelContext)
         sync(session)
     }
 
@@ -221,7 +224,7 @@ final class WorkoutSessionViewModel {
             rpe: last?.rpe
         )
         workoutExercise.sets.append(newSet)
-        try? modelContext.save()
+        saveOrLog(modelContext)
         sync(session)
     }
 
@@ -229,7 +232,7 @@ final class WorkoutSessionViewModel {
         workoutExercise.sets.removeAll { $0.id == set.id }
         modelContext.delete(set)
         renumberSets(for: workoutExercise)
-        try? modelContext.save()
+        saveOrLog(modelContext)
         sync(session)
     }
 
@@ -239,7 +242,7 @@ final class WorkoutSessionViewModel {
         for (index, exercise) in session.exercises.sorted(by: { $0.sortOrder < $1.sortOrder }).enumerated() {
             exercise.sortOrder = index
         }
-        try? modelContext.save()
+        saveOrLog(modelContext)
         sync(session)
     }
 
@@ -269,7 +272,7 @@ final class WorkoutSessionViewModel {
         if set.isCompleted && autoStartRest {
             restTimer.start(seconds: restSeconds)
         }
-        try? modelContext.save()
+        saveOrLog(modelContext)
         sync(session)
         return pr
     }
@@ -300,7 +303,7 @@ final class WorkoutSessionViewModel {
         for set in workoutExercise.sets {
             set.weightMode = replacement.defaultWeightMode
         }
-        try? modelContext.save()
+        saveOrLog(modelContext)
         sync(session)
     }
 
@@ -339,7 +342,7 @@ final class WorkoutSessionViewModel {
             )
         }
         modelContext.insert(copy)
-        try? modelContext.save()
+        saveOrLog(modelContext)
         currentWorkout = copy
         sync(copy)
         return copy
@@ -379,6 +382,7 @@ final class WorkoutSessionViewModel {
 
     func clearValidationWarning() { pendingValidationWarning = nil }
     func clearPRCelebration() { pendingPRCelebration = nil }
+    func clearSaveError() { pendingSaveErrorMessage = nil }
 
     func pause(_ session: WorkoutSession, modelContext: ModelContext) {
         guard session.status != .paused else { return }
@@ -386,7 +390,7 @@ final class WorkoutSessionViewModel {
         if session.pausedAt == nil {
             session.pausedAt = Date()
         }
-        try? modelContext.save()
+        saveOrLog(modelContext)
         HealthKitManager.shared.pauseWorkout()
         sync(session)
     }
@@ -397,7 +401,7 @@ final class WorkoutSessionViewModel {
             session.pausedAt = nil
         }
         session.status = .active
-        try? modelContext.save()
+        saveOrLog(modelContext)
         HealthKitManager.shared.resumeWorkout()
         sync(session)
     }
@@ -413,9 +417,12 @@ final class WorkoutSessionViewModel {
         }
         sync(session)
         HealthKitManager.shared.pauseWorkout()
+        HealthKitManager.shared.resetLiveCounters()
         if currentWorkout?.id == session.id { currentWorkout = nil }
         modelContext.delete(session)
-        try? modelContext.save()
+        saveOrLog(modelContext, label: "discard workout") { [weak self] error in
+            self?.pendingSaveErrorMessage = "放弃训练时未能完成保存：\(error.localizedDescription)"
+        }
         broadcastIdleSnapshot(routines: routines, hapticOnRestComplete: hapticOnRestComplete, weightUnit: weightUnit)
     }
 
@@ -427,13 +434,9 @@ final class WorkoutSessionViewModel {
         session.status = .completed
         session.endedAt = Date()
         let hk = HealthKitManager.shared
-        if session.heartRateSamples.isEmpty {
-            session.heartRateSamples = hk.liveHeartRateSamples
-        }
-        session.averageHeartRate = hk.averageHeartRate ?? session.averageHeartRate
-        session.maxHeartRate = session.heartRateSamples.map(\.bpm).max() ?? session.maxHeartRate
-        session.minHeartRate = session.heartRateSamples.map(\.bpm).min() ?? session.minHeartRate
-        session.activeEnergyKcal = hk.activeEnergyKcal ?? session.activeEnergyKcal
+
+        // Close the watch's HKWorkoutSession first when it's still ours to close, so
+        // any final samples land in HealthKit before we query it back for this session.
         let endedWorkoutUUID: UUID?
         if healthKitWorkoutUUID == nil {
             endedWorkoutUUID = await hk.endWorkout()
@@ -441,16 +444,43 @@ final class WorkoutSessionViewModel {
             endedWorkoutUUID = nil
         }
         session.healthKitWorkoutUUID = healthKitWorkoutUUID ?? endedWorkoutUUID ?? session.healthKitWorkoutUUID
+
+        // HealthKit is now the source of truth. Pull HR + active energy for the
+        // session's time window instead of reading the in-memory singleton (which on
+        // iOS is always nil because the watch is the one driving the workout).
+        let windowEnd = session.endedAt ?? Date()
+        if session.heartRateSamples.isEmpty {
+            let samples = await hk.fetchHeartRateSamples(start: session.startedAt, end: windowEnd)
+            if !samples.isEmpty {
+                session.heartRateSamples = samples
+            }
+        }
+        let bpms = session.heartRateSamples.map(\.bpm).filter { $0.isFinite && $0 > 0 }
+        if !bpms.isEmpty {
+            session.averageHeartRate = AggregationManager.average(bpms)
+            session.maxHeartRate = bpms.max()
+            session.minHeartRate = bpms.min()
+        }
+        if session.activeEnergyKcal == nil {
+            session.activeEnergyKcal = await hk.fetchActiveEnergy(start: session.startedAt, end: windowEnd)
+        }
+
         if writeToHealth && session.healthKitWorkoutUUID == nil {
             session.healthKitWorkoutUUID = await hk.saveWorkoutToHealthKit(session: session)
         }
-        try? modelContext.save()
+
+        // Cleared regardless: we don't want the next workout inheriting stale state.
+        hk.resetLiveCounters()
+
+        saveOrLog(modelContext, label: "finish workout") { [weak self] error in
+            self?.pendingSaveErrorMessage = "保存训练失败：\(error.localizedDescription)"
+        }
         sync(session)
     }
 
     func delete(_ session: WorkoutSession, modelContext: ModelContext) {
         modelContext.delete(session)
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     func deleteAllWorkoutHistory(modelContext: ModelContext) throws {
@@ -484,7 +514,7 @@ final class WorkoutSessionViewModel {
             inserted += 1
         }
 
-        try? modelContext.save()
+        saveOrLog(modelContext)
         return inserted
     }
 
@@ -520,6 +550,10 @@ final class WorkoutSessionViewModel {
         let routineSnapshots = availableRoutinesCache.sorted { $0.name < $1.name }.map {
             WatchRoutineSnapshot(id: $0.id, name: $0.name, exerciseCount: $0.exercises.count, estimatedSets: $0.exercises.reduce(0) { $0 + $1.targetSets })
         }
+        // HR / active energy during a live workout are the watch's responsibility —
+        // it owns the HKWorkoutSession and the HKLiveWorkoutBuilder, and reads
+        // straight from WatchHealthKitManager for the UI. The phone only carries
+        // values that have been persisted onto the session itself.
         let state = WorkoutSyncState(
             workoutId: session.id,
             name: session.name,
@@ -531,9 +565,9 @@ final class WorkoutSessionViewModel {
             currentSetIndex: firstIncompleteSet?.setIndex,
             completedSets: session.completedSetCount,
             totalSets: session.totalSetCount,
-            currentHeartRate: HealthKitManager.shared.currentHeartRate,
-            averageHeartRate: HealthKitManager.shared.averageHeartRate ?? session.averageHeartRate,
-            activeEnergyKcal: HealthKitManager.shared.activeEnergyKcal ?? session.activeEnergyKcal,
+            currentHeartRate: nil,
+            averageHeartRate: session.averageHeartRate,
+            activeEnergyKcal: session.activeEnergyKcal,
             restRemainingSeconds: restTimer.remainingSeconds,
             restTotalSeconds: restTimer.totalSeconds,
             restEndsAt: restTimer.endDate,
@@ -647,12 +681,12 @@ final class BodyMeasurementViewModel {
     func record(kilograms: Double, note: String = "", modelContext: ModelContext) {
         let measurement = BodyMeasurement(date: Date(), bodyMassKg: kilograms, note: note)
         modelContext.insert(measurement)
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     func delete(_ measurement: BodyMeasurement, modelContext: ModelContext) {
         modelContext.delete(measurement)
-        try? modelContext.save()
+        saveOrLog(modelContext)
     }
 
     func latest(from measurements: [BodyMeasurement]) -> BodyMeasurement? {

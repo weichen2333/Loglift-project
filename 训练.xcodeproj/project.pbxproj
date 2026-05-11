@@ -57,6 +57,16 @@
 		411181202FADC90000BA3BE2 /* LiftLogWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiftLogWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		4112E0052FADCA0100BA3BE2 /* Exceptions for "LiftLogWatch" folder in "LiftLogWatch" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 411181222FADC90000BA3BE2 /* LiftLogWatch */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		411180DC2FADBE9A00BA3BE2 /* 训练 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -75,6 +85,9 @@
 		};
 		411181212FADC90000BA3BE2 /* LiftLogWatch */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				4112E0052FADCA0100BA3BE2 /* Exceptions for "LiftLogWatch" folder in "LiftLogWatch" target */,
+			);
 			path = LiftLogWatch;
 			sourceTree = "<group>";
 		};
@@ -678,12 +691,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = H587832HK5;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "训练";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "LiftLog Watch reads live heart rate and active energy during strength workouts.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "LiftLog Watch saves completed strength workouts and active energy to Apple Health.";
-				INFOPLIST_KEY_WKApplication = YES;
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.fan.liftlog;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LiftLogWatch/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fan.liftlog.watchkitapp;
@@ -711,12 +720,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = H587832HK5;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "训练";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "LiftLog Watch reads live heart rate and active energy during strength workouts.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "LiftLog Watch saves completed strength workouts and active energy to Apple Health.";
-				INFOPLIST_KEY_WKApplication = YES;
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.fan.liftlog;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LiftLogWatch/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fan.liftlog.watchkitapp;

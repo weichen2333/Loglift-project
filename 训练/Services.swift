@@ -196,20 +196,39 @@ final class HealthKitManager: NSObject {
     func endWorkout() async -> UUID? {
         #if os(watchOS) && canImport(HealthKit)
         session?.end()
-        guard let builder else { return nil }
+        guard let builder else {
+            resetLiveCounters()
+            return nil
+        }
         do {
             let endDate = Date()
             try await builder.endCollection(at: endDate)
             let workout = try await builder.finishWorkout()
             self.builder = nil
             self.session = nil
+            resetLiveCounters()
             return workout.uuid
         } catch {
+            self.builder = nil
+            self.session = nil
+            resetLiveCounters()
             return nil
         }
         #else
+        resetLiveCounters()
         return nil
         #endif
+    }
+
+    /// Wipe the in-memory live counters between workouts so a second session does not
+    /// inherit the first one's averages / accumulated samples. Safe to call on either
+    /// platform.
+    func resetLiveCounters() {
+        currentHeartRate = nil
+        averageHeartRate = nil
+        activeEnergyKcal = nil
+        liveHeartRateSamples.removeAll()
+        heartRateTotal = 0
     }
 
     func observeHeartRate() {

@@ -53,7 +53,6 @@ struct ContentView: View {
         }
         .preferredColorScheme(settings.first?.theme.preferredColorScheme)
         .tint(settings.first?.accentColor.swiftUIColor ?? .pink)
-        .environment(\.locale, settings.first?.localePreference.localeIdentifier.map(Locale.init(identifier:)) ?? Locale.current)
         .task {
             SeedData.ensureSeeded(modelContext: modelContext)
             workoutVM.attachContext(sessions: sessions, routines: routines, settings: settings.first)
@@ -451,6 +450,14 @@ struct TrainView: View {
             }
             .onAppear {
                 handlePendingLaunchIntent()
+            }
+            .alert("存储错误", isPresented: Binding(
+                get: { workoutVM.pendingSaveErrorMessage != nil },
+                set: { if !$0 { workoutVM.clearSaveError() } }
+            )) {
+                Button("好") { workoutVM.clearSaveError() }
+            } message: {
+                Text(workoutVM.pendingSaveErrorMessage ?? "")
             }
         }
     }
@@ -1462,7 +1469,7 @@ struct RoutineEditorView: View {
         }
         .onDisappear {
             routine.updatedAt = Date()
-            try? modelContext.save()
+            saveOrLog(modelContext, label: "routine edit close")
         }
     }
 }
@@ -2323,20 +2330,6 @@ struct EditableSettingsSection: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
-        }
-
-        SectionHeader(title: "语言", systemImage: "globe")
-        LiftCard {
-            HStack {
-                Text("App 语言")
-                Spacer()
-                Picker("App 语言", selection: $settings.localePreferenceRaw) {
-                    ForEach(AppLocalePreference.allCases) { pref in
-                        Text(pref.displayName).tag(pref.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
             }
         }
 

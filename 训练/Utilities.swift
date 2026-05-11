@@ -1,6 +1,26 @@
 import Foundation
 import Observation
+import OSLog
+import SwiftData
 import UserNotifications
+
+/// Central save helper. Any `try? context.save()` in the codebase should funnel
+/// through this so failures end up in the unified log and (optionally) reach the UI.
+/// Pass `onError` for user-facing flows (finish/discard); leave it nil for
+/// best-effort writes where re-saves are likely to succeed on a subsequent edit.
+@discardableResult
+@MainActor
+func saveOrLog(_ context: ModelContext, label: String = #function, onError: ((Error) -> Void)? = nil) -> Bool {
+    do {
+        try context.save()
+        return true
+    } catch {
+        Logger(subsystem: "com.fan.liftlog", category: "SwiftData")
+            .fault("Save failed in \(label, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        onError?(error)
+        return false
+    }
+}
 
 struct VolumeCalculator {
     static func volume(for set: SetRecord, bodyweightKg: Double = 75, includeBodyweight: Bool = false) -> Double {

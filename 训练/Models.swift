@@ -146,6 +146,10 @@ enum AccentColorPreset: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Reserved for a future locale toggle. The Settings UI for this is intentionally
+/// removed: all UI strings are still hard-coded Chinese, so showing the picker would
+/// be misleading. Restore the picker (and wrap UI strings with `String(localized:)`)
+/// when a proper `Localizable.xcstrings` catalog is added.
 enum AppLocalePreference: String, Codable, CaseIterable, Identifiable {
     case system
     case english

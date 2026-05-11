@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import OSLog
 
 @main
 struct LiftLogApp: App {
@@ -18,22 +19,20 @@ struct LiftLogApp: App {
     }
 
     var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Exercise.self,
-            WorkoutRoutine.self,
-            RoutineExercise.self,
-            WorkoutSession.self,
-            WorkoutExercise.self,
-            SetRecord.self,
-            HeartRateSample.self,
-            UserSettings.self,
-            BodyMeasurement.self
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let schema = Schema(versionedSchema: SchemaV1.self)
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(
+                for: schema,
+                migrationPlan: LiftLogMigrationPlan.self,
+                configurations: [configuration]
+            )
         } catch {
+            // No usable container means no app — log a fault with the full error so
+            // Console.app shows the diagnostic before we abort.
+            Logger(subsystem: "com.fan.liftlog", category: "SwiftData")
+                .fault("Failed to open ModelContainer for SchemaV1: \(error.localizedDescription, privacy: .public)")
             fatalError("Could not create LiftLog ModelContainer: \(error)")
         }
     }()

@@ -142,7 +142,7 @@ struct SetEditorSheet: View {
                     if set.isCompleted {
                         Button {
                             set.toggleCompletion()
-                            try? modelContext.save()
+                            saveOrLog(modelContext, label: "undo set completion")
                             workoutVM.sync(session)
                             dismiss()
                         } label: {
@@ -262,7 +262,7 @@ struct SetEditorSheet: View {
 
     private func commit(complete: Bool) {
         applyToSet()
-        try? modelContext.save()
+        saveOrLog(modelContext, label: "commit set edit")
 
         if complete && !set.isCompleted {
             let restSeconds = workoutExercise.defaultRestSeconds
