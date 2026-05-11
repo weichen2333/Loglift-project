@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		411181132FADC3D600BA3BE2 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 411181122FADC3D600BA3BE2 /* README.md */; };
+		4112E0012FADCA0000BA3BE2 /* LiftLogWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 411181202FADC90000BA3BE2 /* LiftLogWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -25,7 +26,28 @@
 			remoteGlobalIDString = 411180D92FADBE9A00BA3BE2;
 			remoteInfo = "训练";
 		};
+		4112E0022FADCA0000BA3BE2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 411180D22FADBE9A00BA3BE2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 411181222FADC90000BA3BE2;
+			remoteInfo = LiftLogWatch;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		4112E0042FADCA0000BA3BE2 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				4112E0012FADCA0000BA3BE2 /* LiftLogWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		411180DA2FADBE9A00BA3BE2 /* 训练.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "训练.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -123,10 +145,12 @@
 				411180D62FADBE9A00BA3BE2 /* Sources */,
 				411180D72FADBE9A00BA3BE2 /* Frameworks */,
 				411180D82FADBE9A00BA3BE2 /* Resources */,
+				4112E0042FADCA0000BA3BE2 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				4112E0032FADCA0000BA3BE2 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				411180DC2FADBE9A00BA3BE2 /* 训练 */,
@@ -204,7 +228,7 @@
 			);
 			productName = LiftLogWatch;
 			productReference = 411181202FADC90000BA3BE2 /* LiftLogWatch.app */;
-			productType = "com.apple.product-type.application.watchapp2";
+			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
@@ -328,6 +352,11 @@
 			isa = PBXTargetDependency;
 			target = 411180D92FADBE9A00BA3BE2 /* 训练 */;
 			targetProxy = 411180F42FADBE9B00BA3BE2 /* PBXContainerItemProxy */;
+		};
+		4112E0032FADCA0000BA3BE2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 411181222FADC90000BA3BE2 /* LiftLogWatch */;
+			targetProxy = 4112E0022FADCA0000BA3BE2 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -643,18 +672,21 @@
 		411181262FADC90000BA3BE2 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = LiftLogWatch/LiftLogWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = H587832HK5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "训练";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "LiftLog Watch reads live heart rate and active energy during strength workouts.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "LiftLog Watch saves completed strength workouts and active energy to Apple Health.";
 				INFOPLIST_KEY_WKApplication = YES;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.fan.liftlog;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "personal.--.watchkitapp";
+				PRODUCT_BUNDLE_IDENTIFIER = com.fan.liftlog.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -673,18 +705,21 @@
 		411181272FADC90000BA3BE2 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = LiftLogWatch/LiftLogWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = H587832HK5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "训练";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "LiftLog Watch reads live heart rate and active energy during strength workouts.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "LiftLog Watch saves completed strength workouts and active energy to Apple Health.";
 				INFOPLIST_KEY_WKApplication = YES;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.fan.liftlog;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "personal.--.watchkitapp";
+				PRODUCT_BUNDLE_IDENTIFIER = com.fan.liftlog.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;

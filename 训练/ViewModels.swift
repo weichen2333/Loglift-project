@@ -161,6 +161,9 @@ final class WorkoutSessionViewModel {
         oneRepMaxFormula = settings?.oneRepMaxFormula ?? .epley
         hapticOnRestComplete = settings?.watchHapticOnRestComplete ?? true
         weightUnit = settings?.weightUnit ?? .kg
+        if currentWorkout == nil {
+            currentWorkout = sessions.first { $0.status == .active || $0.status == .paused }
+        }
         if let session = currentWorkout {
             sync(session)
         }
@@ -173,6 +176,14 @@ final class WorkoutSessionViewModel {
         sync(session)
         try? modelContext.save()
         return session
+    }
+
+    /// Track a session created elsewhere (e.g. by `RoutineViewModel.startWorkout`) and push
+    /// the initial state to the watch so the template's exercises show up immediately
+    /// rather than only after the first set is completed.
+    func register(activeSession session: WorkoutSession) {
+        currentWorkout = session
+        sync(session)
     }
 
     func addExercise(_ exercise: Exercise, to session: WorkoutSession, modelContext: ModelContext) {
@@ -189,7 +200,7 @@ final class WorkoutSessionViewModel {
         sync(session)
     }
 
-    func addSet(to workoutExercise: WorkoutExercise, modelContext: ModelContext) {
+    func addSet(to workoutExercise: WorkoutExercise, in session: WorkoutSession, modelContext: ModelContext) {
         let sorted = workoutExercise.sets.sorted { $0.setIndex < $1.setIndex }
         let last = sorted.last
         let newSet = SetRecord(
@@ -211,13 +222,15 @@ final class WorkoutSessionViewModel {
         )
         workoutExercise.sets.append(newSet)
         try? modelContext.save()
+        sync(session)
     }
 
-    func deleteSet(_ set: SetRecord, from workoutExercise: WorkoutExercise, modelContext: ModelContext) {
+    func deleteSet(_ set: SetRecord, from workoutExercise: WorkoutExercise, in session: WorkoutSession, modelContext: ModelContext) {
         workoutExercise.sets.removeAll { $0.id == set.id }
         modelContext.delete(set)
         renumberSets(for: workoutExercise)
         try? modelContext.save()
+        sync(session)
     }
 
     func deleteExercise(_ workoutExercise: WorkoutExercise, from session: WorkoutSession, modelContext: ModelContext) {
@@ -368,20 +381,49 @@ final class WorkoutSessionViewModel {
     func clearPRCelebration() { pendingPRCelebration = nil }
 
     func pause(_ session: WorkoutSession, modelContext: ModelContext) {
+        guard session.status != .paused else { return }
         session.status = .paused
+        if session.pausedAt == nil {
+            session.pausedAt = Date()
+        }
         try? modelContext.save()
         HealthKitManager.shared.pauseWorkout()
         sync(session)
     }
 
     func resume(_ session: WorkoutSession, modelContext: ModelContext) {
+        if let pausedAt = session.pausedAt {
+            session.accumulatedPausedSeconds += Date().timeIntervalSince(pausedAt)
+            session.pausedAt = nil
+        }
         session.status = .active
         try? modelContext.save()
         HealthKitManager.shared.resumeWorkout()
         sync(session)
     }
 
+    func discard(_ session: WorkoutSession, modelContext: ModelContext, routines: [WorkoutRoutine], hapticOnRestComplete: Bool, weightUnit: WeightUnit) {
+        // Tell the watch the workout is gone before we delete the model — otherwise
+        // the watch keeps showing the active screen and gets stuck.
+        session.status = .cancelled
+        session.endedAt = Date()
+        if let pausedAt = session.pausedAt {
+            session.accumulatedPausedSeconds += Date().timeIntervalSince(pausedAt)
+            session.pausedAt = nil
+        }
+        sync(session)
+        HealthKitManager.shared.pauseWorkout()
+        if currentWorkout?.id == session.id { currentWorkout = nil }
+        modelContext.delete(session)
+        try? modelContext.save()
+        broadcastIdleSnapshot(routines: routines, hapticOnRestComplete: hapticOnRestComplete, weightUnit: weightUnit)
+    }
+
     func finish(_ session: WorkoutSession, modelContext: ModelContext, writeToHealth: Bool = true, healthKitWorkoutUUID: UUID? = nil) async {
+        if let pausedAt = session.pausedAt {
+            session.accumulatedPausedSeconds += Date().timeIntervalSince(pausedAt)
+            session.pausedAt = nil
+        }
         session.status = .completed
         session.endedAt = Date()
         let hk = HealthKitManager.shared
@@ -494,6 +536,7 @@ final class WorkoutSessionViewModel {
             activeEnergyKcal: HealthKitManager.shared.activeEnergyKcal ?? session.activeEnergyKcal,
             restRemainingSeconds: restTimer.remainingSeconds,
             restTotalSeconds: restTimer.totalSeconds,
+            restEndsAt: restTimer.endDate,
             sequence: 0,
             generatedAt: Date(),
             exercises: exerciseSnapshots,
@@ -524,6 +567,7 @@ final class WorkoutSessionViewModel {
             activeEnergyKcal: nil,
             restRemainingSeconds: nil,
             restTotalSeconds: nil,
+            restEndsAt: nil,
             sequence: 0,
             generatedAt: Date(),
             exercises: [],

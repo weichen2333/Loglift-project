@@ -45,6 +45,9 @@ struct WorkoutSyncState: Codable {
     var activeEnergyKcal: Double?
     var restRemainingSeconds: Int?
     var restTotalSeconds: Int?
+    /// Wall-clock time the current rest period ends. When non-nil the watch counts down
+    /// against this date instead of holding the snapshotted `restRemainingSeconds`.
+    var restEndsAt: Date?
     var sequence: Int = 0
     var generatedAt: Date = Date()
     var exercises: [WatchExerciseSnapshot] = []

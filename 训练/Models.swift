@@ -313,6 +313,10 @@ final class WorkoutSession {
     var activeEnergyKcal: Double?
     var healthKitWorkoutUUID: UUID?
     var note: String
+    /// Set when the workout entered .paused; cleared on resume/finish.
+    var pausedAt: Date?
+    /// Total seconds spent in .paused that have already been rolled up.
+    var accumulatedPausedSeconds: TimeInterval = 0
 
     var source: WorkoutSource {
         get { WorkoutSource(rawValue: sourceRaw) ?? .manual }
@@ -325,7 +329,12 @@ final class WorkoutSession {
     }
 
     var duration: TimeInterval {
-        (endedAt ?? Date()).timeIntervalSince(startedAt)
+        let end = endedAt ?? Date()
+        var paused = accumulatedPausedSeconds
+        if let pausedAt {
+            paused += Date().timeIntervalSince(pausedAt)
+        }
+        return max(0, end.timeIntervalSince(startedAt) - paused)
     }
 
     var completedSetCount: Int {
@@ -359,7 +368,9 @@ final class WorkoutSession {
         minHeartRate: Double? = nil,
         activeEnergyKcal: Double? = nil,
         healthKitWorkoutUUID: UUID? = nil,
-        note: String = ""
+        note: String = "",
+        pausedAt: Date? = nil,
+        accumulatedPausedSeconds: TimeInterval = 0
     ) {
         self.id = id
         self.name = name
@@ -376,6 +387,8 @@ final class WorkoutSession {
         self.activeEnergyKcal = activeEnergyKcal
         self.healthKitWorkoutUUID = healthKitWorkoutUUID
         self.note = note
+        self.pausedAt = pausedAt
+        self.accumulatedPausedSeconds = accumulatedPausedSeconds
     }
 }
 

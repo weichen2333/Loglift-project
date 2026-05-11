@@ -51,6 +51,9 @@ struct WatchWorkoutSyncState: Codable {
     var activeEnergyKcal: Double?
     var restRemainingSeconds: Int?
     var restTotalSeconds: Int?
+    /// Wall-clock time the rest period ends. The watch counts down against this
+    /// instead of holding the snapshotted `restRemainingSeconds`.
+    var restEndsAt: Date?
     var sequence: Int = 0
     var generatedAt: Date = Date()
     var exercises: [WatchExerciseSnapshot] = []
@@ -85,6 +88,13 @@ struct WatchRootView: View {
         .task {
             await WatchHealthKitManager.shared.requestAuthorization()
             WatchSessionManager.shared.requestStateFromCompanion()
+        }
+        .onChange(of: session.lastReceivedState?.status) { _, newStatus in
+            // iOS finished or discarded the workout — leave the active screen even if the
+            // watch was the one that started it locally.
+            if newStatus == .completed || newStatus == .cancelled {
+                isActive = false
+            }
         }
     }
 }
@@ -162,9 +172,21 @@ struct ActiveWatchWorkoutView: View {
     @State private var startedAt = Date()
     @State private var elapsed: TimeInterval = 0
     @State private var lastRestSeconds: Int = 0
+    @State private var liveRestRemaining: Int = 0
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private var state: WatchWorkoutSyncState? { session.lastReceivedState }
+
+    /// Seconds remaining in the current rest period, recomputed every tick from
+    /// `restEndsAt` so the watch shows a live countdown instead of the value frozen at
+    /// the last sync. Falls back to the snapshotted `restRemainingSeconds` when the
+    /// phone hasn't sent an end date.
+    private func computedRestRemaining() -> Int {
+        if let endsAt = state?.restEndsAt {
+            return max(0, Int(endsAt.timeIntervalSinceNow.rounded()))
+        }
+        return state?.restRemainingSeconds ?? 0
+    }
 
     var body: some View {
         TabView {
@@ -180,6 +202,7 @@ struct ActiveWatchWorkoutView: View {
             } else if let state {
                 elapsed = state.elapsedSeconds
             }
+            liveRestRemaining = computedRestRemaining()
             handleRestCompletion()
         }
     }
@@ -197,8 +220,8 @@ struct ActiveWatchWorkoutView: View {
                     MetricBadge(title: "组数", value: "\(state?.completedSets ?? 0)/\(state?.totalSets ?? 0)")
                     MetricBadge(title: "千卡", value: health.activeEnergyKcal.map { "\(Int($0))" } ?? "--")
                 }
-                if let rest = state?.restRemainingSeconds, rest > 0 {
-                    RestRing(remaining: rest, total: state?.restTotalSeconds ?? rest)
+                if liveRestRemaining > 0 {
+                    RestRing(remaining: liveRestRemaining, total: state?.restTotalSeconds ?? liveRestRemaining)
                         .frame(height: 56)
                         .padding(.top, 8)
                 }
@@ -237,8 +260,8 @@ struct ActiveWatchWorkoutView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(state?.currentSetId == nil)
-            if let rest = state?.restRemainingSeconds, rest > 0 {
-                Text("休息 \(rest) 秒")
+            if liveRestRemaining > 0 {
+                Text("休息 \(liveRestRemaining) 秒")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tint)
             }
@@ -311,7 +334,7 @@ struct ActiveWatchWorkoutView: View {
     }
 
     private func handleRestCompletion() {
-        guard let rest = state?.restRemainingSeconds else { return }
+        let rest = liveRestRemaining
         if lastRestSeconds > 0 && rest == 0, state?.hapticOnRestComplete ?? true {
             WatchKit.WKInterfaceDevice.current().play(.notification)
         }

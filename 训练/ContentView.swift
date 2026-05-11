@@ -64,6 +64,10 @@ struct ContentView: View {
                 }
                 WatchConnectivityManager.shared.sendCommand(.restCompleted)
             }
+            workoutVM.restTimer.onChange = { [weak workoutVM] in
+                guard let workoutVM, let session = workoutVM.currentWorkout else { return }
+                workoutVM.sync(session)
+            }
         }
         .onChange(of: sessions.count) { _, _ in
             workoutVM.attachContext(sessions: sessions, routines: routines, settings: settings.first)
@@ -100,7 +104,8 @@ struct ContentView: View {
         }
         if let routineId = connectivity.consumeStartRoutineWorkoutCommand() {
             if let routine = routines.first(where: { $0.id == routineId }), !sessions.contains(where: { $0.status == .active || $0.status == .paused }) {
-                _ = routineVM.startWorkout(from: routine, exercises: exercises, modelContext: modelContext)
+                let session = routineVM.startWorkout(from: routine, exercises: exercises, modelContext: modelContext)
+                workoutVM.register(activeSession: session)
                 trainLaunchIntent = .none
                 selectedTab = .train
             }
@@ -355,7 +360,8 @@ struct DashboardView: View {
             continueWorkout()
             return
         }
-        _ = routineVM.startWorkout(from: routine, exercises: exercises, modelContext: modelContext)
+        let session = routineVM.startWorkout(from: routine, exercises: exercises, modelContext: modelContext)
+        workoutVM.register(activeSession: session)
         trainLaunchIntent = .none
         selectedTab = .train
     }
@@ -413,7 +419,7 @@ struct TrainView: View {
         NavigationStack {
             Group {
                 if let activeSession {
-                    ActiveWorkoutView(session: activeSession, exercises: exercises, settings: settings, allSessions: sessions, workoutVM: workoutVM, showingExercisePicker: $showingExercisePicker)
+                    ActiveWorkoutView(session: activeSession, exercises: exercises, settings: settings, allSessions: sessions, routines: routines, workoutVM: workoutVM, showingExercisePicker: $showingExercisePicker)
                 } else {
                     startPanel
                 }
@@ -510,7 +516,8 @@ struct TrainView: View {
                     } else {
                         ForEach(routines.sorted { $0.name < $1.name }) { routine in
                             RoutineStartCard(routine: routine) {
-                                _ = routineVM.startWorkout(from: routine, exercises: exercises, modelContext: modelContext)
+                                let session = routineVM.startWorkout(from: routine, exercises: exercises, modelContext: modelContext)
+                                workoutVM.register(activeSession: session)
                             } onDuplicate: {
                                 routineVM.duplicate(routine, modelContext: modelContext)
                             }
@@ -577,6 +584,7 @@ struct ActiveWorkoutView: View {
     let exercises: [Exercise]
     let settings: UserSettings?
     let allSessions: [WorkoutSession]
+    let routines: [WorkoutRoutine]
     @Bindable var workoutVM: WorkoutSessionViewModel
     @Binding var showingExercisePicker: Bool
     @State private var timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -629,11 +637,11 @@ struct ActiveWorkoutView: View {
                         .onDelete { offsets in
                             let sorted = workoutExercise.sets.sorted { $0.setIndex < $1.setIndex }
                             for offset in offsets {
-                                workoutVM.deleteSet(sorted[offset], from: workoutExercise, modelContext: modelContext)
+                                workoutVM.deleteSet(sorted[offset], from: workoutExercise, in: session, modelContext: modelContext)
                             }
                         }
                         Button {
-                            workoutVM.addSet(to: workoutExercise, modelContext: modelContext)
+                            workoutVM.addSet(to: workoutExercise, in: session, modelContext: modelContext)
                             DesignTokens.Haptic.tap()
                         } label: {
                             Label("添加组", systemImage: "plus")
@@ -646,7 +654,7 @@ struct ActiveWorkoutView: View {
                             allSessions: allSessions,
                             settings: settings,
                             sessionId: session.id,
-                            onAddSet: { workoutVM.addSet(to: workoutExercise, modelContext: modelContext) },
+                            onAddSet: { workoutVM.addSet(to: workoutExercise, in: session, modelContext: modelContext) },
                             onSwap: { swappingExerciseId = workoutExercise.id },
                             onRemove: { workoutVM.deleteExercise(workoutExercise, from: session, modelContext: modelContext) }
                         )
@@ -738,7 +746,7 @@ struct ActiveWorkoutView: View {
                 Task { await workoutVM.finish(session, modelContext: modelContext, writeToHealth: settings?.writesWorkoutsToHealth ?? true) }
             }
             Button("放弃本次训练", role: .destructive) {
-                modelContext.delete(session)
+                workoutVM.discard(session, modelContext: modelContext, routines: routines, hapticOnRestComplete: settings?.watchHapticOnRestComplete ?? true, weightUnit: settings?.weightUnit ?? .kg)
             }
             Button("取消", role: .cancel) {}
         } message: {
@@ -746,7 +754,7 @@ struct ActiveWorkoutView: View {
         }
         .confirmationDialog("放弃本次训练？", isPresented: $showingCancelConfirmation, titleVisibility: .visible) {
             Button("放弃训练", role: .destructive) {
-                modelContext.delete(session)
+                workoutVM.discard(session, modelContext: modelContext, routines: routines, hapticOnRestComplete: settings?.watchHapticOnRestComplete ?? true, weightUnit: settings?.weightUnit ?? .kg)
             }
             Button("继续训练", role: .cancel) {}
         } message: {
@@ -785,8 +793,10 @@ struct ActiveWorkoutView: View {
     }
 
     private var elapsedDuration: TimeInterval {
-        let end = session.endedAt ?? currentTime
-        return max(0, end.timeIntervalSince(session.startedAt))
+        // Read currentTime to keep the view re-evaluating each tick; the value itself
+        // comes from session.duration so it freezes during .paused.
+        _ = currentTime
+        return session.duration
     }
 
     private struct EditingContext: Identifiable {

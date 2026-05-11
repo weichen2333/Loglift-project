@@ -559,6 +559,10 @@ final class RestTimerManager {
     private(set) var remainingSeconds: Int = 0
     private(set) var totalSeconds: Int = 0
     var onFinish: (() -> Void)?
+    /// Fires when start/adjust/skip changes the timer state, so the active workout can
+    /// re-broadcast its sync state to the watch (the second-by-second tick is not
+    /// considered a state change here — the watch extrapolates from `endDate`).
+    var onChange: (() -> Void)?
 
     var progress: Double {
         guard totalSeconds > 0 else { return 0 }
@@ -573,6 +577,7 @@ final class RestTimerManager {
         remainingSeconds = clamped
         endDate = clamped > 0 ? Date().addingTimeInterval(TimeInterval(clamped)) : nil
         scheduleNotification(after: clamped)
+        onChange?()
     }
 
     func skip() {
@@ -580,6 +585,7 @@ final class RestTimerManager {
         endDate = nil
         totalSeconds = 0
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rest-finished"])
+        onChange?()
     }
 
     func adjust(by seconds: Int) {
@@ -589,6 +595,7 @@ final class RestTimerManager {
         endDate = new > 0 ? Date().addingTimeInterval(TimeInterval(new)) : nil
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["rest-finished"])
         scheduleNotification(after: new)
+        onChange?()
     }
 
     func tick() {
